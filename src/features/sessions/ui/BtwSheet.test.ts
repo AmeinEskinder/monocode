@@ -8,22 +8,39 @@ vi.mock("./Composer", () => ({
     initialDraft,
     onDraftChange,
     onSubmit,
+    busy,
+    allowBusySubmit,
+    onStop,
   }: {
     initialDraft?: string;
     onDraftChange?: (text: string) => void;
     onSubmit: (text: string) => boolean | void;
+    busy?: boolean;
+    allowBusySubmit?: boolean;
+    onStop?: () => void;
   }) =>
-    createElement("textarea", {
-      "data-btw-composer": "true",
-      defaultValue: initialDraft ?? "",
-      onInput: (event: FormEvent<HTMLTextAreaElement>) =>
-        onDraftChange?.(event.currentTarget.value),
-      onKeyDown: (event: KeyboardEvent) => {
-        if (event.key === "Enter") {
-          onSubmit((event.currentTarget as HTMLTextAreaElement).value);
-        }
-      },
-    }),
+    createElement(
+      "div",
+      null,
+      createElement("textarea", {
+        "data-btw-composer": "true",
+        defaultValue: initialDraft ?? "",
+        onInput: (event: FormEvent<HTMLTextAreaElement>) =>
+          onDraftChange?.(event.currentTarget.value),
+        onKeyDown: (event: KeyboardEvent) => {
+          if (event.key === "Enter") {
+            onSubmit((event.currentTarget as HTMLTextAreaElement).value);
+          }
+        },
+      }),
+      busy && allowBusySubmit === false
+        ? createElement(
+            "button",
+            { type: "button", "data-btw-stop": "true", onClick: onStop },
+            "Stop",
+          )
+        : null,
+    ),
 }));
 
 import { BtwSheet, useBtwConversation, type BtwConversation } from "./BtwSheet";
@@ -241,6 +258,36 @@ describe("BTW conversation", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("does not become optimistic when the app rejects a question", async () => {
+    const onSubmit = vi.fn(() => false);
+    await render({ onSubmit });
+    await act(async () => void btw.openWith(""));
+
+    let accepted = true;
+    await act(async () => {
+      accepted = btw.submit("question that was not accepted");
+    });
+
+    expect(accepted).toBe(false);
+    expect(btw.running).toBe(false);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open or clear a submitted command when the app rejects it", async () => {
+    const onSubmit = vi.fn(() => false);
+    await render({ onSubmit });
+
+    let accepted = true;
+    await act(async () => {
+      accepted = btw.openWith("question that was not accepted");
+    });
+
+    expect(accepted).toBe(false);
+    expect(btw.open).toBe(false);
+    expect(btw.running).toBe(false);
+    expect(container.querySelector("[data-btw-overlay]")).toBeNull();
+  });
+
   it("stops a streaming answer from the side composer", async () => {
     const onStop = vi.fn();
     const running: BtwThread = {
@@ -255,7 +302,9 @@ describe("BTW conversation", () => {
     await act(async () => tabs()[0].click());
 
     expect(btw.running).toBe(true);
-    await act(async () => btw.stop());
+    const stop = container.querySelector<HTMLButtonElement>("[data-btw-stop]");
+    expect(stop).not.toBeNull();
+    await act(async () => stop?.click());
     expect(onStop).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: "u1" })]),
       "t1",

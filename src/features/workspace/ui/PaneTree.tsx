@@ -166,7 +166,7 @@ type Shared = {
     text: string,
     model?: string,
     modelSettings?: Record<string, string>,
-  ) => void;
+  ) => boolean | void;
   onBtwRetry?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwDelete?: (sessionId: string, turn: Block[], threadId: string) => void;
   onBtwStop?: (sessionId: string, turn: Block[], threadId: string) => void;

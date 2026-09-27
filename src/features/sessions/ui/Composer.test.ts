@@ -25,11 +25,16 @@ import { Composer, ComposerAction } from "./Composer";
 import type { ComposerTurnOptions, Attachment } from "../model/session";
 import type { UserQuestionPrompt } from "../model/userQuestion";
 
-function renderAction(busy: boolean, hasValue: boolean) {
+function renderAction(
+  busy: boolean,
+  hasValue: boolean,
+  allowBusySubmit = true,
+) {
   return renderToStaticMarkup(
     createElement(ComposerAction, {
       busy,
       hasValue,
+      allowBusySubmit,
       onSend: vi.fn(),
       onStop: vi.fn(),
     }),
@@ -47,6 +52,12 @@ describe("ComposerAction", () => {
     expect(typed).toContain("composer-send");
     expect(typed).toContain("primary-action");
     expect(typed).not.toContain('aria-label="Stop"');
+  });
+
+  it("keeps Stop while busy when submitting follow-up text is disabled", () => {
+    const typed = renderAction(true, true, false);
+    expect(typed).toContain('aria-label="Stop"');
+    expect(typed).not.toContain('aria-label="Send"');
   });
 });
 

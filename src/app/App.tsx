@@ -7793,10 +7793,10 @@ export default function App({
         !sourceUserId ||
         !sourceEndBlockId
       ) {
-        return;
+        return false;
       }
       const sourceBlock = sourceBlockEarly;
-      if (!sourceBlock) return;
+      if (!sourceBlock) return false;
       const existing = existingEarly;
       const selectedModel =
         model?.trim() ||
@@ -7810,8 +7810,10 @@ export default function App({
           resolveModel(requestHarness!, selectedModel || source.model),
           source.modelSettings,
         );
-      if (existing?.status === "running") return;
-      if (existing && existing.sourceEndBlockId !== sourceEndBlockId) return;
+      if (existing?.status === "running") return false;
+      if (existing && existing.sourceEndBlockId !== sourceEndBlockId) {
+        return false;
+      }
       const now = Date.now();
       const thread: BtwThread = existing
         ? {
@@ -7846,7 +7848,7 @@ export default function App({
         threadId,
         () => thread,
       );
-      if (!updated) return;
+      if (!updated) return false;
       runBtwRequest({
         sessionId,
         userBlockId: sourceUserId,
@@ -7854,6 +7856,7 @@ export default function App({
         thread,
         harness: thread.harness ?? requestHarness!,
       });
+      return true;
     },
     [runBtwRequest, updateBtwThread],
   );

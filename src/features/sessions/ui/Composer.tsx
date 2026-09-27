@@ -203,6 +203,8 @@ type Props = {
   handoffCard?: HandoffComposerCard;
   question?: UserQuestionPrompt;
   busy?: boolean;
+  /** Allow typed text to replace Stop with Send while a turn is running. */
+  allowBusySubmit?: boolean;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
@@ -490,6 +492,7 @@ export function Composer({
   handoffCard,
   question,
   busy = false,
+  allowBusySubmit = true,
   editLastTurnSupported = false,
   lastTurnRecall = null,
   queuedMessages = [],
@@ -2290,6 +2293,7 @@ export function Composer({
                 busy={busy}
                 disabled={disabled}
                 hasValue={hasValue && !worktreeRemoved}
+                allowBusySubmit={allowBusySubmit}
                 label={draftSelected ? "Save draft" : "Send"}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onStop={() => onStop?.()}
@@ -2382,6 +2386,7 @@ export function ComposerAction({
   busy,
   disabled = false,
   hasValue,
+  allowBusySubmit = true,
   label = "Send",
   onSend,
   onStop,
@@ -2389,6 +2394,7 @@ export function ComposerAction({
   busy: boolean;
   disabled?: boolean;
   hasValue: boolean;
+  allowBusySubmit?: boolean;
   label?: string;
   onSend: () => void;
   onStop: () => void;
@@ -2407,7 +2413,7 @@ export function ComposerAction({
     );
   }
   if (busy) {
-    return hasValue ? (
+    return hasValue && allowBusySubmit ? (
       <button
         type="button"
         title={label}

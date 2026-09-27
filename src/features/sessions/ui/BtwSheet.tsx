@@ -38,7 +38,7 @@ type Options = {
     text: string,
     model?: string,
     modelSettings?: Record<string, string>,
-  ) => void;
+  ) => boolean | void;
   onRetry: (turn: Block[], threadId: string) => void;
   onDelete?: (turn: Block[], threadId: string) => void;
   onStop?: (turn: Block[], threadId: string) => void;
@@ -221,13 +221,9 @@ export function useBtwConversation({
     text: string,
     nextModel: string,
     nextSettings: Record<string, string>,
-  ) => {
+  ): boolean => {
     const messageId = crypto.randomUUID();
-    setOptimistic({
-      threadId: tab.id,
-      message: { id: messageId, role: "user", text, createdAt: Date.now() },
-    });
-    onSubmit(
+    const accepted = onSubmit(
       tab.turn,
       tab.id,
       messageId,
@@ -235,6 +231,12 @@ export function useBtwConversation({
       nextModel || undefined,
       nextSettings,
     );
+    if (accepted === false) return false;
+    setOptimistic({
+      threadId: tab.id,
+      message: { id: messageId, role: "user", text, createdAt: Date.now() },
+    });
+    return true;
   };
 
   // A new tab reads from the latest finished turn at the moment it opens.
@@ -288,10 +290,11 @@ export function useBtwConversation({
      */
     openWith(text: string, options?: { draft?: boolean }): boolean {
       if (!available) return false;
+      const previousActiveId = activeTabId;
       const tab = startDraft();
       if (!tab) return false;
-      setRequestedOpen(true);
       if (options?.draft) {
+        setRequestedOpen(true);
         draftTextsRef.current[tab.id] = text;
         setSeed((current) => ({ key: current.key + 1, text }));
         return true;
@@ -300,7 +303,7 @@ export function useBtwConversation({
       const tabModel = baseModelFor(tab);
       const tabHarness = tabHarnessFor(blocks, tab, harness);
       if (question && tabHarness) {
-        send(
+        const accepted = send(
           tab,
           question,
           tabModel,
@@ -309,7 +312,16 @@ export function useBtwConversation({
             modelSettings,
           ),
         );
+        if (!accepted) {
+          setDrafts((current) =>
+            current.filter((entry) => entry.id !== tab.id),
+          );
+          delete draftTextsRef.current[tab.id];
+          setActiveId(previousActiveId);
+          return false;
+        }
       }
+      setRequestedOpen(true);
       return true;
     },
     startDraft() {
@@ -325,8 +337,7 @@ export function useBtwConversation({
     submit(text: string): boolean {
       const question = text.trim();
       if (!question || running || !active || !tabHarness) return false;
-      send(active, question, selectedModel, selectedModelSettings);
-      return true;
+      return send(active, question, selectedModel, selectedModelSettings);
     },
     closeTab(tab: BtwTab) {
       const remaining = tabs.filter((entry) => entry.id !== tab.id);
@@ -819,6 +830,7 @@ export function BtwSheet({
                 onModelSettingsChange={btw.changeModelSettings}
                 onRuntimeModeChange={() => {}}
                 busy={running}
+                allowBusySubmit={false}
                 onStop={btw.stop}
                 onSubmit={(text) => btw.submit(text)}
               />
