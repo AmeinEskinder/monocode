@@ -5,14 +5,41 @@ import {
   type HostCommand,
   type HostProject,
   type HostSession,
+  type HostSessionSummary,
   type RemoteMachine,
   type SessionSync,
 } from "./protocol";
 
 const CHANGE = "monocode:remote-machines";
+const HISTORY_CHANGE = "monocode:remote-history";
 export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
-export const refreshRemoteMachines = () => window.dispatchEvent(new Event(CHANGE));
+export const refreshRemoteMachines = () =>
+  window.dispatchEvent(new Event(CHANGE));
 const KEY = "monocode.remote-projects.v1";
+const TAB_KEY = "monocode.remote-tabs.v1";
+export type RemoteTabSelection = { machineId: string; sessionId?: string };
+export function remoteTabFor(shellId: string): RemoteTabSelection | undefined {
+  try {
+    const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
+    return all[shellId];
+  } catch {
+    return undefined;
+  }
+}
+export function rememberRemoteTab(
+  shellId: string,
+  machineId?: string,
+  sessionId?: string,
+) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
+    if (machineId) all[shellId] = { machineId, sessionId };
+    else delete all[shellId];
+    localStorage.setItem(TAB_KEY, JSON.stringify(all));
+  } catch {
+    /* tab selection is best effort */
+  }
+}
 type ProjectConnections = {
   machineId?: string;
   workspaces?: Record<string, HostProject>;
@@ -49,10 +76,12 @@ export const rememberWorkspace = (
   project: string,
   environment: string,
   workspace: HostProject,
-) =>
+) => {
   update(project, {
     workspaces: { ...read(project).workspaces, [environment]: workspace },
   });
+  window.dispatchEvent(new Event(HISTORY_CHANGE));
+};
 export const rememberedSession = (
   project: string,
   environment: string,
@@ -61,10 +90,12 @@ export const rememberSession = (
   project: string,
   environment: string,
   sessionId: string,
-) =>
+) => {
   update(project, {
     sessions: { ...read(project).sessions, [environment]: sessionId },
   });
+  window.dispatchEvent(new Event(HISTORY_CHANGE));
+};
 export const remoteDraft = (project: string, key: string): string =>
   read(project).drafts?.[key] ?? "";
 export const saveRemoteDraft = (project: string, key: string, draft: string) =>
@@ -75,13 +106,23 @@ const pendingPrefix = (project: string, environment: string) =>
 export const pendingRemoteCommand = (
   project: string,
   environment: string,
+  sessionId?: string | null,
 ): HostCommand | undefined => {
   const prefix = pendingPrefix(project, environment);
   for (let index = 0; index < localStorage.length; index++) {
     const key = localStorage.key(index);
     if (key?.startsWith(prefix)) {
       const value = localStorage.getItem(key);
-      if (value) return JSON.parse(value) as HostCommand;
+      if (value) {
+        const command = JSON.parse(value) as HostCommand;
+        if (
+          sessionId === undefined ||
+          (sessionId === null
+            ? command.type === "create"
+            : command.type !== "create" && command.sessionId === sessionId)
+        )
+          return command;
+      }
     }
   }
 };
@@ -190,4 +231,84 @@ export function useRemoteMachines(enabled = true): {
     };
   }, [enabled]);
   return state;
+}
+
+export type RemoteHistoryGroup = {
+  machine: RemoteMachine;
+  sessions: HostSessionSummary[];
+};
+
+const historyKey = (project: string, environment: string) =>
+  `monocode.remote-history.v1:${JSON.stringify([project, environment])}`;
+
+function cachedSessions(
+  project: string,
+  environment: string,
+): HostSessionSummary[] {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(historyKey(project, environment)) ?? "[]",
+    );
+    return Array.isArray(value) ? (value as HostSessionSummary[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Keeps mapped remote sessions visible in the project sidebar across reconnects. */
+export function useRemoteProjectSessions(
+  project: string,
+  enabled = true,
+): RemoteHistoryGroup[] {
+  const { machines } = useRemoteMachines(enabled);
+  const [groups, setGroups] = useState<RemoteHistoryGroup[]>([]);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const changed = () => setRefresh((value) => value + 1);
+    window.addEventListener(HISTORY_CHANGE, changed);
+    return () => window.removeEventListener(HISTORY_CHANGE, changed);
+  }, [enabled]);
+  useEffect(() => {
+    if (!enabled) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const mapped = machines.flatMap((machine) => {
+        const workspace = workspaceFor(project, machine.environmentId);
+        return workspace ? [{ machine, workspace }] : [];
+      });
+      const rows = await Promise.all(
+        mapped.map(async ({ machine, workspace }) => {
+          let sessions = cachedSessions(project, machine.environmentId);
+          try {
+            sessions = await remoteRequest<HostSessionSummary[]>(
+              machine.id,
+              "sessions.list",
+              { projectId: workspace.id },
+            );
+            localStorage.setItem(
+              historyKey(project, machine.environmentId),
+              JSON.stringify(sessions),
+            );
+          } catch {
+            // Last known history stays navigable while the machine reconnects.
+          }
+          return {
+            machine,
+            sessions,
+          };
+        }),
+      );
+      if (disposed) return;
+      setGroups(rows);
+      timer = setTimeout(() => void poll(), 3_000);
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [enabled, project, machines, refresh]);
+  return groups;
 }

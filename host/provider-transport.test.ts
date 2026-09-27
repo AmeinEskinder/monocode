@@ -6,6 +6,8 @@ import { HostChildBackend } from "./child-backend";
 import { HostStore } from "./store";
 import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
+import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
+import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 import {
   acquireHarnessBridge,
   configureChildBackend,
@@ -19,6 +21,8 @@ const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
 readline.createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line);
   if (request.method === 'initialize') send({id: request.id, result: {}});
+  if (request.method === 'account/read') send({id: request.id, result: {account: {type: 'fixture'}, requiresOpenaiAuth: false}});
+  if (request.method === 'model/list') send({id: request.id, result: {data: [{model: 'fixture-model', displayName: 'Fixture model', supportedReasoningEfforts: ['low', 'high']}], nextCursor: null}});
   if (request.method === 'thread/start' || request.method === 'thread/resume') send({id: request.id, result: {thread: {id: 'fixture-thread'}}});
   if (request.method === 'turn/start') {
     send({id: request.id, result: {turn: {id: 'fixture-turn'}}});
@@ -31,6 +35,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
     send({type: 'system', subtype: 'init', session_id: 'fixture-claude'});
     send({type: 'control_response', response: {subtype: 'success', request_id: request.request_id}});
   }
+  if (request.type === 'control_request' && request.request.subtype === 'list_models') send({type: 'control_response', response: {subtype: 'success', request_id: request.request_id, response: {models: [{value: 'claude-fixture-model', resolvedModel: 'claude-fixture-model', displayName: 'Fixture Claude'}]}}});
   if (request.type === 'user') setTimeout(() => {
     send({type: 'assistant', session_id: 'fixture-claude', message: {content: [{type: 'text', text: 'Headless Claude completed'}]}});
     send({type: 'result', subtype: 'success', session_id: 'fixture-claude'});
@@ -62,6 +67,19 @@ describe("existing providers over headless process I/O", () => {
     release?.();
     store?.close();
     if (directory) rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("discovers host models in parallel without probe process collisions", async () => {
+    const [codexA, codexB, claudeA, claudeB] = await Promise.all([
+      discoverCodexModels(directory),
+      discoverCodexModels(directory),
+      discoverClaudeModels(directory),
+      discoverClaudeModels(directory),
+    ]);
+    expect(codexA).toEqual(codexB);
+    expect(codexA[0]).toMatchObject({ id: "codex:fixture-model" });
+    expect(claudeA).toEqual(claudeB);
+    expect(claudeA[0]).toMatchObject({ nativeId: "claude-fixture-model" });
   });
 
   it.each(["codex", "claude"] as const)(

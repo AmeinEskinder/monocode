@@ -8,6 +8,7 @@ import {
   clearPendingRemoteCommand,
   pendingRemoteCommand,
   rememberSession,
+  rememberRemoteTab,
   rememberWorkspace,
   saveRemoteDraft,
   savePendingRemoteCommand,
@@ -83,9 +84,24 @@ beforeEach(() => {
         providers: ["codex"],
         capabilities: ["sessions"],
       };
+    if (method === "models.list")
+      return {
+        models: {
+          codex: [
+            {
+              id: "codex:test",
+              harness: "codex",
+              name: "Test model",
+              nativeId: "test",
+            },
+          ],
+        },
+        errors: {},
+      };
     if (method === "sessions.list")
       return [{ id: "session", title: "Host session", status: "idle" }];
-    if (method === "sessions.sync") return { kind: "snapshot", value: snapshot };
+    if (method === "sessions.sync")
+      return { kind: "snapshot", value: snapshot };
     if (method === "commands.dispatch") {
       commands.push(params);
       if (failSend) throw new Error("Machine is unreachable");
@@ -108,6 +124,7 @@ async function render() {
       createElement(RemoteSessionPane, {
         machine,
         project: "/laptop/repo",
+        shellId: "shell",
         machinePicker: "Machine picker",
       }),
     );
@@ -196,4 +213,42 @@ it("keeps another pane's uncertain request when a late receipt arrives", () => {
   });
   clearPendingRemoteCommand("/laptop/repo", "env", "first");
   expect(pendingRemoteCommand("/laptop/repo", "env")?.commandId).toBe("second");
+});
+
+it("keeps pending requests scoped to their remote session", () => {
+  const command: HostCommand = {
+    type: "send",
+    commandId: "first",
+    sessionId: "session",
+    text: "First",
+  };
+  savePendingRemoteCommand("/laptop/repo", "env", command);
+  expect(pendingRemoteCommand("/laptop/repo", "env", "session")).toEqual(
+    command,
+  );
+  expect(pendingRemoteCommand("/laptop/repo", "env", "other")).toBeUndefined();
+  expect(pendingRemoteCommand("/laptop/repo", "env", null)).toBeUndefined();
+});
+
+it("dispatches /compact as a host command instead of a text prompt", async () => {
+  failSend = false;
+  saveRemoteDraft("/laptop/repo", "env:session", "/compact");
+  await render();
+  await act(async () => {
+    container
+      .querySelector("textarea")!
+      .form!.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+  });
+  expect(commands).toHaveLength(1);
+  expect(commands[0].type).toBe("compact");
+  expect(container.querySelector("textarea")!.value).toBe("");
+});
+
+it("starts a new session for a tab with no remote session selection", async () => {
+  rememberRemoteTab("shell", machine.id);
+  await render();
+  expect(container.textContent).toContain("Start a session on Home server");
+  expect(container.textContent).not.toContain("Host transcript");
 });

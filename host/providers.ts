@@ -2,6 +2,7 @@ import * as codex from "../src/integrations/harness/providers/codex/codex";
 import * as claude from "../src/integrations/harness/providers/claude/claude";
 import type {
   SendTurnInput,
+  CompactContextInput,
   ApprovalDecision,
 } from "../src/integrations/harness/core/types";
 import type { UserQuestionReply } from "../src/features/sessions/model/userQuestion";
@@ -9,6 +10,7 @@ import type { RemoteProvider } from "../src/features/connections/model/protocol"
 
 export interface HostProvider {
   send(input: SendTurnInput): Promise<void>;
+  compact?(input: CompactContextInput): Promise<void>;
   cancel(id: string): Promise<void>;
   stop(id: string): Promise<void>;
   bind(id: string, providerId: string, cwd: string): void;
@@ -19,6 +21,7 @@ export interface HostProvider {
 export const hostProviders: Record<RemoteProvider, HostProvider> = {
   codex: {
     send: codex.sendCodexTurn,
+    compact: codex.compactCodexContext,
     cancel: codex.cancelCodexTurn,
     stop: codex.forgetCodexSession,
     bind: codex.bindCodexSession,
@@ -27,6 +30,7 @@ export const hostProviders: Record<RemoteProvider, HostProvider> = {
   },
   claude: {
     send: claude.sendClaudeTurn,
+    compact: claude.compactClaudeContext,
     cancel: claude.cancelClaudeTurn,
     stop: claude.forgetClaudeSession,
     bind: claude.bindClaudeSession,

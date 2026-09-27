@@ -2,7 +2,7 @@
 
 MonoCode can run Codex and Claude Code sessions on a separate Windows, Linux, or macOS host. The host owns the provider processes and session database. Closing the desktop, closing its remote view, or losing the SSH tunnel does not stop a host session.
 
-Select your project in the existing project rail. The **This computer** control in an empty session chooses the machine. Remote sessions appear in that machine's session selector; reopening the project and selecting the machine lets you return to them from any connected desktop.
+Select your project in the existing project rail. The **This computer** control in an empty session chooses the machine. Remote sessions appear in the main Sessions sidebar under the machine name. Select one there to open it in its own tab.
 
 ## Connect through SSH
 
@@ -27,8 +27,8 @@ The forward binds to a temporary port on the laptop's loopback interface. Removi
 
 1. Select your project in the existing project rail.
 2. In an empty session, use **This computer** to choose the saved machine.
-3. Link that project to an existing checkout's absolute path on the host, such as `/home/me/code/my-app`.
-4. Create a Codex or Claude session and send a prompt.
+3. Browse folders on the host to link that project to an existing checkout, or enter its absolute path, such as `/home/me/code/my-app`.
+4. Select a provider, an available host model, and its settings; create a session and send a prompt. Model and permission settings can be changed between turns. Existing local branches can be selected when the host checkout is clean and all its sessions are idle.
 
 The mapping is remembered per host. Paths may differ between your laptop and host. A project must currently exist in the laptop's rail; remote-only rail entries are a later integration step. Source files stay on the host; this feature shares host-owned sessions, not working-directory synchronization.
 
@@ -90,7 +90,7 @@ The release workflow publishes `monocode-host-{darwin,linux}-{arm64,x64}.tar.gz`
 
 Supported: persistent remote text conversations, existing Codex/Claude adapters, follow-up turns, approvals, questions, cancellation, per-device revocation, reconnect, tracked Git diffs against HEAD, and bounded text-file previews. The desktop polls the host and downloads only transcript blocks that changed since its last update (every 0.75 s while a session runs, 3 s otherwise). The host writes streamed output in 120 ms batches and keeps a bounded event journal.
 
-Remote history currently lives in the remote view's session selector, rather than the main local session sidebar. Local sessions retain their existing lifecycle. Remote attachments, worktree creation, editing files, terminals, model catalog discovery, named provider accounts, `/operator`, automations, orchestration, host upgrades from Settings, and account-based tunnels are not implemented yet. Remote prompts are sent directly to the provider; MonoCode's local slash-command workflow is not applied.
+Remote history appears in the main Sessions sidebar for projects linked to a host workspace. Local sessions retain their existing lifecycle. Remote `/compact` uses the provider's context compaction; other local slash commands and skill expansion are not yet available remotely. Remote attachments, worktree creation, editing files, terminals, named provider accounts, `/operator`, automations, orchestration, host upgrades from Settings, LAN discovery, and account-based tunnels are not implemented yet. Other remote prompts are sent directly to the provider.
 
 The headless host runs the reused TypeScript adapters with a Node process backend. It proves the execution boundary without introducing the planned Rust daemon/worker IPC yet. Node is included in host release archives, separately from the desktop application.
 

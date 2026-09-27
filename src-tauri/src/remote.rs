@@ -291,13 +291,17 @@ pub fn remote_request(
         method.as_str(),
         "environment.describe"
             | "projects.list"
+            | "projects.browse"
             | "projects.open"
+            | "models.list"
             | "sessions.list"
             | "sessions.get"
             | "sessions.sync"
             | "commands.dispatch"
             | "events.read"
             | "git.diff"
+            | "git.branches"
+            | "git.switch"
             | "files.read"
     ) {
         return Err("Unsupported remote operation".into());
@@ -312,25 +316,30 @@ pub fn remote_request(
             .find(|m| m.id == machine_id)
             .ok_or("Machine is no longer connected")?
     };
-    let endpoint = if let Some(target) = &machine.ssh {
-        state.tunnels.endpoint(&machine.id, target)?
+    let tunnel_lease = if let Some(target) = &machine.ssh {
+        Some(state.tunnels.endpoint(&machine.id, target)?)
     } else {
-        machine.endpoint.clone()
+        None
     };
+    let endpoint = tunnel_lease
+        .as_ref()
+        .map(|lease| lease.endpoint.as_str())
+        .unwrap_or(&machine.endpoint);
     let response = rpc(
-        &endpoint,
+        endpoint,
         &machine.token,
         Some(&machine.environment_id),
         &method,
         params,
     );
-    if machine.ssh.is_some()
-        && response
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.starts_with("Machine is unreachable"))
+    if response
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.starts_with("Machine is unreachable"))
     {
-        state.tunnels.remove(&machine.id);
+        if let Some(lease) = &tunnel_lease {
+            state.tunnels.invalidate(&machine.id, lease);
+        }
     }
     let result = response?;
     if method == "environment.describe"

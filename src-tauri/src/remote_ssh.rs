@@ -509,6 +509,13 @@ impl Tunnel {
 struct Slot {
     tunnel: Option<Tunnel>,
     failure: Option<(Instant, String)>,
+    generation: u64,
+}
+
+pub struct TunnelLease {
+    pub endpoint: String,
+    slot: Arc<Mutex<Slot>>,
+    generation: u64,
 }
 
 /// Each machine has its own lock: restarting one machine's tunnel (up to
@@ -527,6 +534,7 @@ impl Tunnels {
         let slot = Slot {
             tunnel: Some(tunnel),
             failure: None,
+            generation: 1,
         };
         let old = self.slots().insert(id, Arc::new(Mutex::new(slot)));
         drop(old);
@@ -535,16 +543,20 @@ impl Tunnels {
         let old = self.slots().remove(id);
         drop(old);
     }
-    pub fn endpoint(&self, id: &str, target: &SshTarget) -> Result<String, String> {
+    pub fn endpoint(&self, id: &str, target: &SshTarget) -> Result<TunnelLease, String> {
         let slot = self.slots().entry(id.into()).or_default().clone();
-        let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tunnel) = slot.tunnel.as_mut() {
+        let mut current = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tunnel) = current.tunnel.as_mut() {
             if tunnel.alive() {
-                return Ok(format!("http://127.0.0.1:{}", tunnel.port));
+                return Ok(TunnelLease {
+                    endpoint: format!("http://127.0.0.1:{}", tunnel.port),
+                    slot: slot.clone(),
+                    generation: current.generation,
+                });
             }
         }
-        slot.tunnel = None;
-        if let Some((when, error)) = &slot.failure {
+        current.tunnel = None;
+        if let Some((when, error)) = &current.failure {
             if when.elapsed() < Duration::from_secs(10) {
                 return Err(error.clone());
             }
@@ -552,14 +564,32 @@ impl Tunnels {
         match Tunnel::start(target, None, None) {
             Ok(tunnel) => {
                 let endpoint = format!("http://127.0.0.1:{}", tunnel.port);
-                slot.failure = None;
-                slot.tunnel = Some(tunnel);
-                Ok(endpoint)
+                current.failure = None;
+                current.generation = current.generation.wrapping_add(1);
+                current.tunnel = Some(tunnel);
+                Ok(TunnelLease {
+                    endpoint,
+                    slot: slot.clone(),
+                    generation: current.generation,
+                })
             }
             Err(error) => {
-                slot.failure = Some((Instant::now(), error.clone()));
+                current.failure = Some((Instant::now(), error.clone()));
                 Err(error)
             }
+        }
+    }
+    pub fn invalidate(&self, id: &str, lease: &TunnelLease) {
+        let Some(slot) = self.slots().get(id).cloned() else {
+            return;
+        };
+        if !Arc::ptr_eq(&slot, &lease.slot) {
+            return;
+        }
+        let mut current = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if current.generation == lease.generation {
+            current.tunnel = None;
+            current.failure = None;
         }
     }
     pub fn clear(&self) {
@@ -606,6 +636,44 @@ pub fn device_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_requests_cannot_invalidate_a_newer_tunnel() {
+        let tunnels = Tunnels::default();
+        let slot = |generation| {
+            Arc::new(Mutex::new(Slot {
+                tunnel: None,
+                failure: Some((Instant::now(), "keep".into())),
+                generation,
+            }))
+        };
+        let old = slot(1);
+        tunnels.slots().insert("host".into(), old.clone());
+        let old_lease = TunnelLease {
+            endpoint: String::new(),
+            slot: old,
+            generation: 1,
+        };
+        let newer = slot(2);
+        tunnels.slots().insert("host".into(), newer.clone());
+        tunnels.invalidate("host", &old_lease);
+        assert!(newer.lock().unwrap().failure.is_some());
+        let stale_lease = TunnelLease {
+            endpoint: String::new(),
+            slot: newer.clone(),
+            generation: 1,
+        };
+        tunnels.invalidate("host", &stale_lease);
+        assert!(newer.lock().unwrap().failure.is_some());
+        tunnels.invalidate(
+            "host",
+            &TunnelLease {
+                generation: 2,
+                ..stale_lease
+            },
+        );
+        assert!(newer.lock().unwrap().failure.is_none());
+    }
     // scripts/test-remote-ssh.py creates an isolated sshd, host and keypair.
     // This test uses the production tunnel lifecycle and shell transport.
     #[test]

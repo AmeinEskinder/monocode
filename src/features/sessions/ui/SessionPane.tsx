@@ -223,6 +223,7 @@ export const SessionPane = memo(function SessionPane(props: Props) {
   return (
     <SessionMachineRouter
       cwd={session.cwd}
+      shellId={session.id}
       choosable={
         session.blocks.length === 0 &&
         !session.inboxAsk &&

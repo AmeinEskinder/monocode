@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AgentTranscript } from "../../sessions/ui/AgentTranscript";
 import { QuestionForm } from "../../sessions/ui/QuestionForm";
-import { MODELS } from "../../sessions/model/models";
+import type { AgentModel } from "../../sessions/model/models";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_LABEL,
@@ -12,19 +12,25 @@ import {
   loadRemoteSession,
   pendingRemoteCommand,
   rememberSession,
+  rememberRemoteTab,
   rememberWorkspace,
   rememberedSession,
   remoteDraft,
+  remoteTabFor,
   remoteRequest,
   savePendingRemoteCommand,
   saveRemoteDraft,
   workspaceFor,
 } from "../model/connections";
+import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import {
   requireHostDescriptor,
   type CommandReceipt,
   type HostCommand,
   type HostDescriptor,
+  type HostDirectory,
+  type HostBranches,
+  type HostModelCatalog,
   type HostProject,
   type HostSession,
   type HostSessionSummary,
@@ -35,15 +41,22 @@ import {
 const field =
   "rounded-md border border-content/15 bg-background-base p-2 text-[12px] text-content";
 
+const settingsFor = (model?: AgentModel): Record<string, string> =>
+  Object.fromEntries(
+    (model?.settings ?? []).map((setting) => [setting.id, setting.value]),
+  );
+
 /** Remote views deliberately don't mount local workspace hooks. All execution,
  * approval and file actions below explicitly target their owning machine. */
 export function RemoteSessionPane({
   machine,
   project,
+  shellId,
   machinePicker,
 }: {
   machine: RemoteMachine;
   project: string;
+  shellId: string;
   machinePicker: ReactNode;
 }) {
   const [descriptor, setDescriptor] = useState<HostDescriptor>();
@@ -51,22 +64,36 @@ export function RemoteSessionPane({
     workspaceFor(project, machine.environmentId),
   );
   const [path, setPath] = useState("");
-  const [sessionId, setSessionId] = useState(() =>
-    rememberedSession(project, machine.environmentId),
-  );
-  const [sessions, setSessions] = useState<HostSessionSummary[]>([]);
+  const [directory, setDirectory] = useState<HostDirectory>();
+  const [browsing, setBrowsing] = useState(false);
+  const [catalog, setCatalog] = useState<HostModelCatalog>();
+  const [branches, setBranches] = useState<HostBranches>();
+  const [branchChoice, setBranchChoice] = useState("");
+  const [switchingBranch, setSwitchingBranch] = useState(false);
+  const [sessionId, setSessionId] = useState(() => {
+    const tab = remoteTabFor(shellId);
+    return tab
+      ? tab.sessionId
+      : rememberedSession(project, machine.environmentId);
+  });
   const [snapshot, setSnapshot] = useState<HostSession>();
   const [online, setOnline] = useState(false);
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const [pending, setPending] = useState(() =>
-    pendingRemoteCommand(project, machine.environmentId),
+    pendingRemoteCommand(project, machine.environmentId, sessionId ?? null),
   );
   const [sending, setSending] = useState(false);
+  useEffect(() => {
+    setPending(
+      pendingRemoteCommand(project, machine.environmentId, sessionId ?? null),
+    );
+  }, [project, machine.environmentId, sessionId]);
   const sendingRef = useRef(false);
   const [provider, setProvider] = useState<RemoteProvider>("codex");
-  const [model, setModel] = useState(
-    MODELS.find((model) => model.harness === "codex")?.id ?? "codex:gpt-5.4",
+  const [model, setModel] = useState("");
+  const [modelSettings, setModelSettings] = useState<Record<string, string>>(
+    {},
   );
   const [mode, setMode] = useState<RuntimeMode>("supervised");
   const draftKey = `${machine.environmentId}:${sessionId ?? "new"}`;
@@ -129,7 +156,6 @@ export function RemoteSessionPane({
         if (next && workspace && next.projectId !== workspace.id) {
           throw new Error("This session belongs to a different host workspace");
         }
-        setSessions(list);
         setOnline(true);
         setConnectionError("");
         failed = 0;
@@ -168,15 +194,91 @@ export function RemoteSessionPane({
     ) {
       const next = descriptor.providers[0];
       setProvider(next);
-      setModel(MODELS.find((model) => model.harness === next)?.id ?? next);
     }
   }, [descriptor, provider]);
+
+  useEffect(() => {
+    if (!descriptor || !workspace) return;
+    let disposed = false;
+    setCatalog(undefined);
+    void remoteRequest<HostModelCatalog>(machine.id, "models.list", {
+      projectId: workspace.id,
+    })
+      .then((value) => {
+        if (!disposed) setCatalog(value);
+      })
+      .catch((reason) => {
+        if (!disposed) setError(String(reason));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [machine.id, descriptor?.environmentId, workspace?.id]);
+
+  useEffect(() => {
+    if (sessionId || !catalog) return;
+    const first = catalog.models[provider]?.[0];
+    const available = catalog.models[provider]?.find(
+      (entry) => entry.id === model,
+    );
+    if (!available) {
+      setModel(first?.id ?? "");
+      setModelSettings(settingsFor(first));
+    }
+  }, [catalog, provider, sessionId, model]);
+
+  const browse = async (nextPath?: string) => {
+    setBrowsing(true);
+    setError("");
+    try {
+      const next = await remoteRequest<HostDirectory>(
+        machine.id,
+        "projects.browse",
+        {
+          path: nextPath,
+        },
+      );
+      if (alive.current) {
+        setDirectory(next);
+        setPath(next.path);
+      }
+    } catch (reason) {
+      if (alive.current) setError(String(reason));
+    } finally {
+      if (alive.current) setBrowsing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!online || workspace || directory) return;
+    void browse();
+  }, [online, workspace, directory, machine.id]);
+
+  useEffect(() => {
+    if (!online || !workspace) return;
+    let disposed = false;
+    void remoteRequest<HostBranches>(machine.id, "git.branches", {
+      projectId: workspace.id,
+    })
+      .then((value) => {
+        if (disposed) return;
+        setBranches(value);
+        setBranchChoice(value.current ?? "");
+      })
+      .catch(() => {
+        if (!disposed) setBranches(undefined);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [online, workspace?.id, machine.id]);
 
   const selectSession = (id: string) => {
     setSnapshot(undefined);
     setSessionId(id || undefined);
     setPreview(undefined);
-    rememberSession(project, machine.environmentId, id);
+    rememberRemoteTab(shellId, machine.id, id || undefined);
+    if (id) rememberSession(project, machine.environmentId, id);
   };
 
   const run = async (command: HostCommand) => {
@@ -199,23 +301,36 @@ export function RemoteSessionPane({
         machine.environmentId,
         command.commandId,
       );
+      const submitted =
+        command.type === "send"
+          ? command.text
+          : command.type === "compact"
+            ? "/compact"
+            : undefined;
+      const submittedSessionId =
+        command.type === "send" || command.type === "compact"
+          ? command.sessionId
+          : undefined;
       if (
-        command.type === "send" &&
+        submitted &&
+        submittedSessionId &&
         remoteDraft(
           project,
-          `${machine.environmentId}:${command.sessionId}`,
-        ) === command.text
+          `${machine.environmentId}:${submittedSessionId}`,
+        ) === submitted
       )
         saveRemoteDraft(
           project,
-          `${machine.environmentId}:${command.sessionId}`,
+          `${machine.environmentId}:${submittedSessionId}`,
           "",
         );
       if (!alive.current) return;
-      setPending(pendingRemoteCommand(project, machine.environmentId));
+      setPending(
+        pendingRemoteCommand(project, machine.environmentId, sessionId ?? null),
+      );
       if (command.type === "create") selectSession(receipt.sessionId);
-      if (command.type === "send")
-        setDraft((current) => (current === command.text ? "" : current));
+      if (submitted)
+        setDraft((current) => (current === submitted ? "" : current));
       setRefresh((value) => value + 1);
     } catch (reason) {
       if (!alive.current) return;
@@ -226,7 +341,13 @@ export function RemoteSessionPane({
           machine.environmentId,
           command.commandId,
         );
-        setPending(pendingRemoteCommand(project, machine.environmentId));
+        setPending(
+          pendingRemoteCommand(
+            project,
+            machine.environmentId,
+            sessionId ?? null,
+          ),
+        );
       }
       setError(message);
     } finally {
@@ -273,7 +394,77 @@ export function RemoteSessionPane({
     snapshot && snapshot.session.id === sessionId
       ? snapshot.session
       : undefined;
-  const canAct = online && !sending && !pending;
+  const configuredSession = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!session || configuredSession.current === session.id) return;
+    configuredSession.current = session.id;
+    setProvider(session.harness as RemoteProvider);
+    setModel(session.model);
+    setModelSettings(session.modelSettings ?? {});
+    setMode(session.runtimeMode);
+  }, [session]);
+  const availableModels = catalog?.models[provider] ?? [];
+  const selectedModel = availableModels.find((entry) => entry.id === model);
+  const modelOptions = availableModels.map((entry) => ({
+    value: entry.id,
+    label: entry.name,
+    keywords: entry.nativeId,
+  }));
+  if (model && !selectedModel && session)
+    modelOptions.unshift({
+      value: model,
+      label: `${model} (unavailable)`,
+      keywords: model,
+    });
+  const settingsChanged =
+    session &&
+    (model !== session.model ||
+      mode !== session.runtimeMode ||
+      JSON.stringify(modelSettings) !==
+        JSON.stringify(session.modelSettings ?? {}));
+  const modelControls = (
+    <>
+      <SearchableSelect
+        label="Remote model"
+        value={model}
+        options={modelOptions}
+        onChange={(next) => {
+          setModel(next);
+          setModelSettings(
+            settingsFor(availableModels.find((entry) => entry.id === next)),
+          );
+        }}
+        placeholder={catalog ? "No models available" : "Loading models…"}
+        disabled={!catalog || modelOptions.length === 0}
+        variant="row"
+      />
+      {(selectedModel?.settings ?? []).map((setting) => (
+        <SearchableSelect
+          key={`${model}:${setting.id}`}
+          label={setting.label}
+          value={modelSettings[setting.id] ?? setting.value}
+          options={setting.options}
+          onChange={(value) =>
+            setModelSettings((current) => ({ ...current, [setting.id]: value }))
+          }
+          searchable={false}
+          variant="row"
+        />
+      ))}
+      <SearchableSelect
+        label="Remote permission mode"
+        value={mode}
+        options={RUNTIME_MODES.map((value) => ({
+          value,
+          label: RUNTIME_MODE_LABEL[value],
+        }))}
+        onChange={(value) => setMode(value as RuntimeMode)}
+        searchable={false}
+        variant="row"
+      />
+    </>
+  );
+  const canAct = online && !sending && !pending && !switchingBranch;
   return (
     <div className="flex h-full min-h-0 flex-col text-content">
       <div className="flex flex-wrap items-center gap-3 border-b border-content/10 px-5 py-3 text-[12px]">
@@ -286,8 +477,18 @@ export function RemoteSessionPane({
             className="min-w-0 flex-1 truncate text-content/45"
             title={workspace.cwd}
           >
-            {workspace.cwd}
+            {session?.title ?? workspace.cwd}
           </span>
+        )}
+        {workspace && session && (
+          <button
+            type="button"
+            disabled={sending || !!pending}
+            onClick={() => selectSession("")}
+            className="text-content/60 disabled:opacity-40"
+          >
+            New session
+          </button>
         )}
         {workspace && (
           <button
@@ -299,6 +500,60 @@ export function RemoteSessionPane({
           </button>
         )}
       </div>
+      {workspace && branches && branches.branches.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-content/10 px-5 py-2 text-[12px]">
+          <SearchableSelect
+            label="Host branch"
+            value={branchChoice}
+            options={branches.branches.map((branch) => ({
+              value: branch,
+              label: branch,
+            }))}
+            onChange={setBranchChoice}
+            variant="row"
+          />
+          {branchChoice && branchChoice !== branches.current && (
+            <button
+              type="button"
+              disabled={!online || switchingBranch || !!session?.busy}
+              onClick={() => {
+                setSwitchingBranch(true);
+                setError("");
+                void remoteRequest<HostBranches>(machine.id, "git.switch", {
+                  projectId: workspace.id,
+                  branch: branchChoice,
+                })
+                  .then((value) => {
+                    if (!alive.current) return;
+                    setBranches(value);
+                    setBranchChoice(value.current ?? "");
+                  })
+                  .catch((reason) => {
+                    if (alive.current) setError(String(reason));
+                  })
+                  .finally(() => {
+                    if (alive.current) setSwitchingBranch(false);
+                    void remoteRequest<HostBranches>(
+                      machine.id,
+                      "git.branches",
+                      {
+                        projectId: workspace.id,
+                      },
+                    )
+                      .then((value) => {
+                        if (alive.current) setBranches(value);
+                      })
+                      .catch(() => undefined);
+                  });
+              }}
+              className="rounded bg-content/10 px-2 py-1 disabled:opacity-40"
+            >
+              {switchingBranch ? "Switching…" : "Switch branch"}
+            </button>
+          )}
+          <span className="text-content/40">Shared host checkout</span>
+        </div>
+      )}
       {(error || connectionError) && (
         <div
           role="alert"
@@ -340,21 +595,62 @@ export function RemoteSessionPane({
         >
           <p className="font-medium">Connect this project to {machine.name}</p>
           <p className="text-[13px] text-content/50">
-            Enter the existing checkout’s absolute path on that machine. This
-            links the project selected in your rail.
+            Browse the folders on that machine to choose an existing checkout.
+            This links the project selected in your rail.
           </p>
-          <input
-            required
-            className={field}
-            aria-label="Project path on host"
-            placeholder={
-              descriptor?.platform === "win32"
-                ? "C:\\Users\\me\\code\\my-app"
-                : "/home/me/projects/my-app"
-            }
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-          />
+          <div className="flex gap-2">
+            <input
+              required
+              className={`${field} min-w-0 flex-1`}
+              aria-label="Project path on host"
+              placeholder={
+                descriptor?.platform === "win32"
+                  ? "C:\\Users\\me\\code\\my-app"
+                  : "/home/me/projects/my-app"
+              }
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+            />
+            <button
+              type="button"
+              disabled={!online || browsing}
+              onClick={() => void browse(path || undefined)}
+              className="rounded-md bg-content/10 px-3 text-[12px] disabled:opacity-40"
+            >
+              Browse
+            </button>
+          </div>
+          {directory && (
+            <div
+              className="max-h-64 overflow-auto rounded-md border border-content/10 p-1"
+              aria-label="Host folders"
+            >
+              {directory.parent && (
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
+                  onClick={() => void browse(directory.parent!)}
+                >
+                  .. Parent folder
+                </button>
+              )}
+              {directory.entries.map((entry) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
+                  onClick={() => void browse(entry.path)}
+                >
+                  {entry.name}
+                </button>
+              ))}
+              {!directory.entries.length && (
+                <p className="px-2 py-1.5 text-[12px] text-content/45">
+                  No subfolders
+                </p>
+              )}
+            </div>
+          )}
           <button
             disabled={!online || sending}
             className="rounded-md bg-content/10 px-4 py-2 text-[13px] disabled:opacity-40"
@@ -364,38 +660,6 @@ export function RemoteSessionPane({
         </form>
       ) : (
         <>
-          <div className="flex items-center gap-2 px-5 py-3">
-            <select
-              aria-label="Remote session"
-              className={`${field} min-w-0 flex-1`}
-              value={sessionId ?? ""}
-              disabled={sending || !!pending}
-              onChange={(event) => selectSession(event.target.value)}
-            >
-              <option value="">New session on {machine.name}</option>
-              {sessionId &&
-                !sessions.some((session) => session.id === sessionId) && (
-                  <option value={sessionId}>Loading session…</option>
-                )}
-              {sessions.map((session) => (
-                <option key={session.id} value={session.id}>
-                  {session.title}
-                  {session.status === "running"
-                    ? " · Running"
-                    : session.status === "interrupted"
-                      ? " · Interrupted"
-                      : ""}
-                </option>
-              ))}
-            </select>
-            <button
-              className="px-2 text-[12px] text-content/60 disabled:opacity-40"
-              disabled={sending || !!pending}
-              onClick={() => selectSession("")}
-            >
-              New session
-            </button>
-          </div>
           {preview ? (
             <div className="flex min-h-0 flex-1 flex-col px-5 pb-4">
               <div className="flex justify-between py-2 text-[12px]">
@@ -442,54 +706,24 @@ export function RemoteSessionPane({
             <div className="m-auto flex w-full max-w-lg flex-col gap-4 p-6">
               <p className="text-[15px]">Start a session on {machine.name}</p>
               <div className="flex flex-wrap gap-2">
-                <select
-                  aria-label="Remote provider"
-                  className={field}
+                <SearchableSelect
+                  label="Remote provider"
                   value={provider}
-                  onChange={(event) => {
-                    const next = event.target.value as RemoteProvider;
-                    setProvider(next);
-                    setModel(
-                      MODELS.find((model) => model.harness === next)?.id ??
-                        next,
-                    );
-                  }}
-                >
-                  {(descriptor?.providers ?? []).map((provider) => (
-                    <option key={provider} value={provider}>
-                      {provider === "codex" ? "Codex" : "Claude Code"}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className={`${field} min-w-0 flex-1`}
-                  aria-label="Remote model"
-                  list="remote-models"
-                  value={model}
-                  onChange={(event) => setModel(event.target.value)}
+                  options={(descriptor?.providers ?? []).map((value) => ({
+                    value,
+                    label: value === "codex" ? "Codex" : "Claude Code",
+                  }))}
+                  onChange={(value) => setProvider(value as RemoteProvider)}
+                  searchable={false}
+                  variant="row"
                 />
-                <datalist id="remote-models">
-                  {MODELS.filter((model) => model.harness === provider).map(
-                    (model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ),
-                  )}
-                </datalist>
+                {modelControls}
               </div>
-              <select
-                aria-label="Remote permission mode"
-                className={field}
-                value={mode}
-                onChange={(event) => setMode(event.target.value as RuntimeMode)}
-              >
-                {RUNTIME_MODES.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {RUNTIME_MODE_LABEL[mode]}
-                  </option>
-                ))}
-              </select>
+              {catalog?.errors[provider] && (
+                <p role="alert" className="text-[12px] text-red-400">
+                  Could not load models: {catalog.errors[provider]}
+                </p>
+              )}
               <p className="text-[12px] text-content/45">
                 Uses the current checkout and provider account on the host.
                 Sessions keep running when you close this app.
@@ -504,7 +738,7 @@ export function RemoteSessionPane({
                 disabled={
                   !canAct ||
                   !descriptor?.providers.includes(provider) ||
-                  !model.trim()
+                  !selectedModel
                 }
                 className="rounded-md bg-content/10 p-2 text-[13px] disabled:opacity-40"
                 onClick={() =>
@@ -514,6 +748,7 @@ export function RemoteSessionPane({
                     projectId: workspace.id,
                     harness: provider,
                     model,
+                    modelSettings,
                     runtimeMode: mode,
                   })
                 }
@@ -547,15 +782,50 @@ export function RemoteSessionPane({
                 className="rounded-lg border border-content/15 bg-content/3 p-3"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (canAct && !session.busy && draft.trim())
-                    void run({
-                      type: "send",
-                      commandId: crypto.randomUUID(),
-                      sessionId: session.id,
-                      text: draft,
-                    });
+                  if (
+                    canAct &&
+                    !session.busy &&
+                    !settingsChanged &&
+                    draft.trim()
+                  )
+                    void run(
+                      draft.trim().toLowerCase() === "/compact"
+                        ? {
+                            type: "compact",
+                            commandId: crypto.randomUUID(),
+                            sessionId: session.id,
+                          }
+                        : {
+                            type: "send",
+                            commandId: crypto.randomUUID(),
+                            sessionId: session.id,
+                            text: draft,
+                          },
+                    );
                 }}
               >
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  {modelControls}
+                  {settingsChanged && (
+                    <button
+                      type="button"
+                      disabled={!canAct || !!session.busy || !selectedModel}
+                      className="rounded-md bg-accent/20 px-2.5 py-1.5 text-[12px] disabled:opacity-40"
+                      onClick={() =>
+                        void run({
+                          type: "configure",
+                          commandId: crypto.randomUUID(),
+                          sessionId: session.id,
+                          model,
+                          modelSettings,
+                          runtimeMode: mode,
+                        })
+                      }
+                    >
+                      Apply settings
+                    </button>
+                  )}
+                </div>
                 <textarea
                   aria-label="Message remote agent"
                   placeholder={
@@ -592,6 +862,22 @@ export function RemoteSessionPane({
                         ? "Interrupted"
                         : "Ready"}
                   </span>
+                  {!session.busy && (
+                    <button
+                      type="button"
+                      disabled={!canAct || !!settingsChanged}
+                      className="rounded px-2 py-1.5 text-content/50 hover:bg-content/10 disabled:opacity-40"
+                      onClick={() =>
+                        void run({
+                          type: "compact",
+                          commandId: crypto.randomUUID(),
+                          sessionId: session.id,
+                        })
+                      }
+                    >
+                      Compact context
+                    </button>
+                  )}
                   {session.busy ? (
                     <button
                       type="button"
@@ -610,7 +896,7 @@ export function RemoteSessionPane({
                     </button>
                   ) : (
                     <button
-                      disabled={!canAct || !draft.trim()}
+                      disabled={!canAct || !!settingsChanged || !draft.trim()}
                       className="rounded bg-content/10 px-3 py-1.5 disabled:opacity-40"
                     >
                       Send

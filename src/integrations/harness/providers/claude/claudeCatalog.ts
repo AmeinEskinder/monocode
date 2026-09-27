@@ -233,19 +233,26 @@ export function refreshClaudeCatalog(): Promise<void> {
   return inflight;
 }
 
-async function discoverClaudeModels(): Promise<AgentModel[]> {
-  const listed = await discoverViaListModels().catch((error: unknown) => {
-    console.debug("[monocode] claude list_models catalog failed", error);
-    return [];
-  });
+export async function discoverClaudeModels(
+  workingDirectory?: string,
+): Promise<AgentModel[]> {
+  const listed = await discoverViaListModels(workingDirectory).catch(
+    (error: unknown) => {
+      console.debug("[monocode] claude list_models catalog failed", error);
+      return [];
+    },
+  );
   if (listed.length > 0) return listed;
-  return discoverViaVersion();
+  return discoverViaVersion(workingDirectory);
 }
 
-async function discoverViaListModels(): Promise<AgentModel[]> {
+async function discoverViaListModels(
+  workingDirectory?: string,
+): Promise<AgentModel[]> {
   const { path } = await resolveClaudeBinary();
-  const cwd = await homeDir();
+  const cwd = workingDirectory ?? (await homeDir());
   const sessionId = crypto.randomUUID();
+  const probeId = `${PROBE_ID}-${sessionId}`;
 
   let listed: ((models: AgentModel[]) => void) | null = null;
   let failed: ((error: Error) => void) | null = null;
@@ -259,7 +266,7 @@ async function discoverViaListModels(): Promise<AgentModel[]> {
     if (asked) return;
     asked = true;
     void writeChild(
-      PROBE_ID,
+      probeId,
       JSON.stringify(
         buildControlRequest(LIST_MODELS_REQUEST_ID, { subtype: "list_models" }),
       ),
@@ -269,12 +276,12 @@ async function discoverViaListModels(): Promise<AgentModel[]> {
   };
 
   const stop = async () => {
-    unwatchChild(PROBE_ID);
-    await killChild(PROBE_ID).catch(() => undefined);
+    unwatchChild(probeId);
+    await killChild(probeId).catch(() => undefined);
   };
 
   watchChild(
-    PROBE_ID,
+    probeId,
     (line) => {
       const rec = parseJsonLine(line);
       if (!rec) return;
@@ -289,13 +296,13 @@ async function discoverViaListModels(): Promise<AgentModel[]> {
 
   try {
     await spawnChild(
-      PROBE_ID,
+      probeId,
       path,
       buildClaudeSpawnArgs({ isolated: true, sessionId }),
       cwd,
     );
     await writeChild(
-      PROBE_ID,
+      probeId,
       JSON.stringify(
         buildControlRequest(INIT_REQUEST_ID, { subtype: "initialize" }),
       ),
@@ -308,9 +315,11 @@ async function discoverViaListModels(): Promise<AgentModel[]> {
   }
 }
 
-async function discoverViaVersion(): Promise<AgentModel[]> {
+async function discoverViaVersion(
+  workingDirectory?: string,
+): Promise<AgentModel[]> {
   const { path } = await resolveClaudeBinary();
-  const cwd = await homeDir();
+  const cwd = workingDirectory ?? (await homeDir());
   const versionOut = await execChild(path, ["--version"], cwd);
   const version = parseClaudeVersion(versionOut);
   return modelsForClaudeVersion(version);

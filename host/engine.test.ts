@@ -60,6 +60,100 @@ function setup() {
 }
 
 describe("headless session ownership", () => {
+  it("keeps the checkout idle while a branch switch is in progress", async () => {
+    const { engine, project, id, turns } = setup();
+    let finishSwitch = () => {};
+    const switching = engine.withIdleProject(
+      project.id,
+      () =>
+        new Promise<void>((resolve) => {
+          finishSwitch = resolve;
+        }),
+    );
+    expect(() =>
+      engine.command({
+        type: "send",
+        commandId: "during-switch",
+        sessionId: id,
+        text: "Work",
+      }),
+    ).toThrow("branch switch");
+    expect(() =>
+      engine.command({
+        type: "create",
+        commandId: "new-during-switch",
+        projectId: project.id,
+        harness: "codex",
+        model: "codex:test",
+        runtimeMode: "supervised",
+      }),
+    ).toThrow("branch switch");
+    finishSwitch();
+    await switching;
+    engine.command({
+      type: "send",
+      commandId: "after-switch",
+      sessionId: id,
+      text: "Work",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    turns[0].finish();
+  });
+
+  it("runs provider context compaction once and persists its transcript marker", async () => {
+    const { engine, store, provider, id } = setup();
+    let finishCompact = () => {};
+    provider.compact = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCompact = resolve;
+        }),
+    );
+    const command = { type: "compact", commandId: "compact", sessionId: id };
+    const receipt = engine.command(command);
+    expect(engine.command(command)).toEqual(receipt);
+    await vi.waitFor(() => expect(provider.compact).toHaveBeenCalledTimes(1));
+    expect(store.session(id).session.blocks).toContainEqual(
+      expect.objectContaining({ text: "/compact" }),
+    );
+    finishCompact();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+  });
+
+  it("persists model and permission changes for the next turn and rejects changes mid-turn", async () => {
+    const { engine, store, turns, id } = setup();
+    const change = {
+      type: "configure",
+      commandId: "settings",
+      sessionId: id,
+      model: "codex:new",
+      modelSettings: { reasoningEffort: "high" },
+      runtimeMode: "full-access",
+    };
+    const receipt = engine.command(change);
+    expect(engine.command(change)).toEqual(receipt);
+    expect(store.session(id).session).toMatchObject({
+      model: "codex:new",
+      modelSettings: { reasoningEffort: "high" },
+      runtimeMode: "full-access",
+    });
+    engine.command({
+      type: "send",
+      commandId: "turn",
+      sessionId: id,
+      text: "Continue",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(turns[0].input).toMatchObject({
+      model: "codex:new",
+      modelSettings: { reasoningEffort: "high" },
+      runtimeMode: "full-access",
+    });
+    expect(() => engine.command({ ...change, commandId: "later" })).toThrow(
+      "current turn",
+    );
+    turns[0].finish();
+  });
   it("keeps working with no client, persists output, and deduplicates a lost acknowledgement", async () => {
     const { engine, store, turns, provider, id } = setup();
     const command = {
@@ -228,7 +322,10 @@ describe("headless session ownership", () => {
     await vi.waitFor(() => expect(turns).toHaveLength(1));
     const started = store.session(id).revision;
     for (let index = 0; index < 50; index++)
-      turns[0].input.onEvent({ type: "message.delta", text: `chunk ${index} ` });
+      turns[0].input.onEvent({
+        type: "message.delta",
+        text: `chunk ${index} `,
+      });
     expect(store.session(id).revision).toBe(started);
     await vi.waitFor(() =>
       expect(store.session(id).revision).toBe(started + 1),

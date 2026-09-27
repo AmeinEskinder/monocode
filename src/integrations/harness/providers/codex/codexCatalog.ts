@@ -47,11 +47,14 @@ export function refreshCodexCatalog(): Promise<void> {
   return inflight;
 }
 
-async function discoverCodexModels(): Promise<AgentModel[]> {
+export async function discoverCodexModels(
+  workingDirectory?: string,
+): Promise<AgentModel[]> {
   const { path } = await resolveCodexBinary();
-  const cwd = await homeDir();
+  const cwd = workingDirectory ?? (await homeDir());
+  const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const rpc = new JsonRpcClient(
-    PROBE_ID,
+    probeId,
     {
       onRequest: (id) => {
         void rpc.respond(id, {}).catch(() => undefined);
@@ -62,18 +65,18 @@ async function discoverCodexModels(): Promise<AgentModel[]> {
 
   const stop = async () => {
     rpc.close();
-    unwatchChild(PROBE_ID);
-    await killChild(PROBE_ID).catch(() => undefined);
+    unwatchChild(probeId);
+    await killChild(probeId).catch(() => undefined);
   };
 
   watchChild(
-    PROBE_ID,
+    probeId,
     (line) => rpc.pushLine(line),
     () => rpc.close(new Error("Codex probe exited")),
   );
 
   try {
-    await spawnChild(PROBE_ID, path, ["app-server"], cwd);
+    await spawnChild(probeId, path, ["app-server"], cwd);
     return await withTimeout(DISCOVERY_TIMEOUT_MS, async () => {
       await rpc.request(
         "initialize",

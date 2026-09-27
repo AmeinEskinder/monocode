@@ -3,16 +3,21 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpath, readFile } from "node:fs/promises";
 import { relative, resolve, isAbsolute } from "node:path";
 import {
   HOST_PROTOCOL_VERSION,
+  type HostModelCatalog,
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import { browseHostDirectories } from "./browse";
+import { hostBranches, switchHostBranch } from "./git-branches";
+import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
+import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 
 const exec = promisify(execFile);
 const MAX_BODY = 512 * 1024;
@@ -38,6 +43,35 @@ export function createHostServer(
   providers: RemoteProvider[],
   lifecycle?: (request: IncomingMessage, response: ServerResponse) => void,
 ) {
+  const catalogs = new Map<string, Promise<HostModelCatalog>>();
+  const models = (projectId?: unknown) => {
+    const cwd =
+      typeof projectId === "string"
+        ? engine.store.project(projectId).cwd
+        : homedir();
+    let catalog = catalogs.get(cwd);
+    if (!catalog) {
+      catalog = (async () => {
+        const result: HostModelCatalog = { models: {}, errors: {} };
+        await Promise.all(
+          providers.map(async (provider) => {
+            try {
+              result.models[provider] =
+                provider === "codex"
+                  ? await discoverCodexModels(cwd)
+                  : await discoverClaudeModels(cwd);
+            } catch (error) {
+              result.errors[provider] =
+                error instanceof Error ? error.message : String(error);
+            }
+          }),
+        );
+        return result;
+      })();
+      catalogs.set(cwd, catalog);
+    }
+    return catalog;
+  };
   return createServer(
     { requestTimeout: 20_000, headersTimeout: 10_000, maxHeaderSize: 8192 },
     async (request, response) => {
@@ -101,9 +135,13 @@ export function createHostServer(
               providers,
               capabilities: [
                 "sessions",
+                "projects.browse",
+                "models.list",
                 "approvals",
                 "questions",
                 "diff",
+                "git.branches",
+                "git.switch",
                 "files.read",
               ],
             };
@@ -111,8 +149,14 @@ export function createHostServer(
           case "projects.list":
             result = engine.store.projects();
             break;
+          case "projects.browse":
+            result = await browseHostDirectories(params.path);
+            break;
           case "projects.open":
             result = await engine.openProject(String(params.cwd ?? ""));
+            break;
+          case "models.list":
+            result = await models(params.projectId);
             break;
           case "sessions.list": {
             const projectId = String(params.projectId ?? "");
@@ -163,6 +207,22 @@ export function createHostServer(
               { cwd: project.cwd, timeout: 10_000, maxBuffer: 2 * 1024 * 1024 },
             );
             result = diff.stdout;
+            break;
+          }
+          case "git.branches": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await hostBranches(project.cwd);
+            break;
+          }
+          case "git.switch": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await engine.withIdleProject(project.id, () =>
+              switchHostBranch(project.cwd, params.branch),
+            );
             break;
           }
           case "files.read": {

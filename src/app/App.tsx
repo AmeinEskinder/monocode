@@ -524,7 +524,13 @@ import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock
 import { SearchView } from "../features/search/ui/SearchView";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
 import { SettingsView, type SettingsAnchor } from "../features/settings/ui/SettingsView";
-import { OPEN_CONNECTIONS_EVENT } from "../features/connections/model/connections";
+import {
+  OPEN_CONNECTIONS_EVENT,
+  rememberMachine,
+  rememberRemoteTab,
+  rememberSession,
+} from "../features/connections/model/connections";
+import type { RemoteMachine } from "../features/connections/model/protocol";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import { InboxView, LinkedWorkItemPanel } from "../features/inbox/ui/InboxView";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -2134,6 +2140,24 @@ export default function App({
     sessionDefaults?.runtimeMode,
     projectCwd,
   ]);
+
+  const onSelectRemoteSession = useCallback(
+    (project: string, machine: RemoteMachine, remoteSessionId: string) => {
+      rememberMachine(project, machine.id);
+      rememberSession(project, machine.environmentId, remoteSessionId);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
+      const tab = newTab(session.id);
+      rememberRemoteTab(session.id, machine.id, remoteSessionId);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, project);
+      setActiveTabId(tab.id);
+    },
+    [appendTab, sessionDefaults?.runtimeMode],
+  );
 
   const onStartInboxItem = useCallback(
     async (item: InboxItem, body?: string) => {
@@ -10094,6 +10118,7 @@ export default function App({
               status={historyFailed ? "error" : "idle"}
               pending={historyPending}
               onSelectSession={onSelectHistorySession}
+              onSelectRemoteSession={onSelectRemoteSession}
               onPrefetchSession={onPrefetchHistorySession}
               onSessionNavigationOrder={onSessionNavigationOrder}
               onPlaceSessionOnPane={onPlaceSessionOnPane}

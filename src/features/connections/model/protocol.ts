@@ -1,5 +1,6 @@
 import type { Block, Session, RuntimeMode } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import type { AgentModel } from "../../sessions/model/models";
 
 export const HOST_PROTOCOL_VERSION = 1;
 export type RemoteProvider = "codex" | "claude";
@@ -12,6 +13,16 @@ export type HostDescriptor = {
   platform?: "win32" | "darwin" | "linux";
 };
 export type HostProject = { id: string; cwd: string; name: string };
+export type HostDirectory = {
+  path: string;
+  parent: string | null;
+  entries: { name: string; path: string }[];
+};
+export type HostModelCatalog = {
+  models: Partial<Record<RemoteProvider, AgentModel[]>>;
+  errors: Partial<Record<RemoteProvider, string>>;
+};
+export type HostBranches = { current: string | null; branches: string[] };
 export type HostSession = {
   session: Session;
   projectId: string;
@@ -81,8 +92,18 @@ export type HostCommand =
       projectId: string;
       harness: RemoteProvider;
       model: string;
+      modelSettings?: Record<string, string>;
       runtimeMode: RuntimeMode;
     }
+  | {
+      type: "configure";
+      commandId: string;
+      sessionId: string;
+      model: string;
+      modelSettings: Record<string, string>;
+      runtimeMode: RuntimeMode;
+    }
+  | { type: "compact"; commandId: string; sessionId: string }
   | { type: "send"; commandId: string; sessionId: string; text: string }
   | { type: "cancel"; commandId: string; sessionId: string; runId: string }
   | {

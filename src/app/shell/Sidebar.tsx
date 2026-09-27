@@ -46,7 +46,10 @@ import {
   type SidebarTabId,
 } from "../../features/settings/model/appearance";
 import { formatInteger } from "../../shared/lib/numbers";
-import { type GitFileDiffKind, type GitHistoryCommit } from "../../platform/tauri/fs";
+import {
+  type GitFileDiffKind,
+  type GitHistoryCommit,
+} from "../../platform/tauri/fs";
 import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
@@ -58,7 +61,10 @@ import {
   pruneSessionSelection,
   toggleSessionSelection,
 } from "../../features/sessions/model/sessionSelection";
-import { paneDropFromPoint, setExternalPaneDrop } from "../../features/workspace/model/paneDrop";
+import {
+  paneDropFromPoint,
+  setExternalPaneDrop,
+} from "../../features/workspace/model/paneDrop";
 import type { PaneEdge } from "../../features/workspace/model/layout";
 import { suppressTextSelection } from "../../shared/lib/drag";
 import {
@@ -106,7 +112,10 @@ import {
   saveSessionSidebarFilters,
   type SessionSidebarFilters,
 } from "../../features/sessions/model/sessionFilters";
-import type { HarnessId, LinkedWorkItem } from "../../features/sessions/model/session";
+import type {
+  HarnessId,
+  LinkedWorkItem,
+} from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
 import type { SettingsSectionId } from "../../features/settings/model/settings";
@@ -125,8 +134,14 @@ import {
   sameProjectPath,
   type RecentProject,
 } from "../../features/projects/model/recents";
-import { ColorPickerPopover, ColorSwatchRow } from "../../shared/ui/ColorPickerPopover";
-import { ExplorerMenu, type ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
+import {
+  ColorPickerPopover,
+  ColorSwatchRow,
+} from "../../shared/ui/ColorPickerPopover";
+import {
+  ExplorerMenu,
+  type ExplorerMenuItem,
+} from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
@@ -151,6 +166,8 @@ import { SessionsEmpty } from "../../features/sessions/ui/SessionsEmpty";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GithubStarPrompt } from "./GithubStarPrompt";
+import { useRemoteProjectSessions } from "../../features/connections/model/connections";
+import type { RemoteMachine } from "../../features/connections/model/protocol";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 560;
@@ -203,6 +220,11 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  onSelectRemoteSession?: (
+    project: string,
+    machine: RemoteMachine,
+    sessionId: string,
+  ) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onPlaceSessionOnPane?: (
@@ -301,6 +323,7 @@ function SidebarComponent({
   status,
   pending,
   onSelectSession,
+  onSelectRemoteSession,
   onSessionNavigationOrder,
   onPrefetchSession,
   onPlaceSessionOnPane,
@@ -374,6 +397,14 @@ function SidebarComponent({
   onDismissUpdate,
 }: Props) {
   const gitRoot = gitCwd || cwd;
+  const remoteGroups = useRemoteProjectSessions(
+    cwd,
+    tab === "sessions" && !!onSelectRemoteSession && !!cwd && cwd !== "~",
+  );
+  const remoteSessionCount = remoteGroups.reduce(
+    (count, group) => count + group.sessions.length,
+    0,
+  );
   const resize = useDragResize({
     min: MIN_WIDTH,
     max: () => Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.5)),
@@ -1536,6 +1567,10 @@ function SidebarComponent({
                       ? "No matching sessions"
                       : "No sessions match these filters"}
                   </p>
+                ) : remoteSessionCount > 0 ? (
+                  <p className="px-3 py-2 text-[12px] text-content/45">
+                    No local sessions
+                  </p>
                 ) : (
                   <SessionsEmpty message="Sessions you start will show up here" />
                 )
@@ -1780,6 +1815,59 @@ function SidebarComponent({
                     />
                   ) : null}
                 </ul>
+              )}
+              {remoteGroups.some((group) => group.sessions.length > 0) && (
+                <section
+                  aria-label="Remote sessions"
+                  className="border-t border-stroke px-1.5 py-2"
+                >
+                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-content/45">
+                    Remote sessions
+                  </p>
+                  {remoteGroups.map(({ machine, sessions }) => {
+                    const matching = sessions.filter((session) =>
+                      session.title
+                        .toLocaleLowerCase()
+                        .includes(searchQuery.toLocaleLowerCase()),
+                    );
+                    if (!matching.length) return null;
+                    return (
+                      <div key={machine.id} className="mb-2">
+                        <p
+                          className="truncate px-2 py-1 text-[11px] text-content/45"
+                          title={machine.name}
+                        >
+                          {machine.name}
+                        </p>
+                        {matching.map((session) => (
+                          <button
+                            key={session.id}
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] hover:bg-content/10"
+                            title={`${session.title} · ${machine.name}`}
+                            onClick={() =>
+                              onSelectRemoteSession?.(cwd, machine, session.id)
+                            }
+                          >
+                            <MessageMultiple
+                              className="size-3.5 shrink-0 text-content/45"
+                              strokeWidth={1.75}
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {session.title}
+                            </span>
+                            {session.status === "running" && (
+                              <span
+                                className="size-1.5 shrink-0 rounded-full bg-emerald-400"
+                                title="Running"
+                              />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </section>
               )}
             </div>
           )}

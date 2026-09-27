@@ -26,6 +26,7 @@ async function render(choosable: boolean) {
     root.render(
       createElement(SessionMachineRouter, {
         cwd: "/laptop/repo",
+        shellId: "shell",
         choosable,
         local: (machineControl) => createElement(LocalPane, { machineControl }),
       }),

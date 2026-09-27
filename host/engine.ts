@@ -2,7 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { applyHarnessEvent } from "../src/integrations/harness/core/apply";
-import type { HarnessEvent } from "../src/integrations/harness/core/types";
+import type {
+  HarnessEvent,
+  HarnessSessionInput,
+} from "../src/integrations/harness/core/types";
 import {
   RUNTIME_MODES,
   type Session,
@@ -39,6 +42,25 @@ const text = (value: unknown, label: string, max = 128): string => {
   return value;
 };
 
+function modelSettings(value: unknown): Record<string, string> {
+  if (value == null) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid model settings");
+  const entries = Object.entries(value);
+  if (
+    entries.length > 20 ||
+    entries.some(
+      ([key, setting]) =>
+        !/^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(key) ||
+        typeof setting !== "string" ||
+        setting.length > 128 ||
+        setting.includes("\0"),
+    )
+  )
+    throw new Error("Invalid model settings");
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
 export function parseCommand(input: unknown): HostCommand {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("Invalid command");
@@ -56,10 +78,26 @@ export function parseCommand(input: unknown): HostCommand {
       projectId: text(v.projectId, "project ID"),
       harness: v.harness,
       model: text(v.model, "model", 200),
+      ...(v.modelSettings !== undefined
+        ? { modelSettings: modelSettings(v.modelSettings) }
+        : {}),
       runtimeMode: v.runtimeMode as Session["runtimeMode"],
     };
   }
   const sessionId = text(v.sessionId, "session ID");
+  if (v.type === "configure") {
+    if (!RUNTIME_MODES.includes(v.runtimeMode as never))
+      throw new Error("Invalid permission mode");
+    return {
+      type: "configure",
+      commandId,
+      sessionId,
+      model: text(v.model, "model", 200),
+      modelSettings: modelSettings(v.modelSettings),
+      runtimeMode: v.runtimeMode as Session["runtimeMode"],
+    };
+  }
+  if (v.type === "compact") return { type: "compact", commandId, sessionId };
   if (v.type === "send")
     return {
       type: "send",
@@ -141,6 +179,7 @@ export function parseCommand(input: unknown): HostCommand {
 }
 
 export class HostEngine {
+  private switchingProjects = new Set<string>();
   private running = new Map<
     string,
     { runId: string; done: Promise<void>; cancelled: boolean }
@@ -189,6 +228,28 @@ export class HostEngine {
     if (!(await stat(cwd)).isDirectory())
       throw new Error("Project path is not a directory");
     return this.store.addProject(cwd, basename(cwd));
+  }
+
+  async withIdleProject<T>(
+    projectId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (this.switchingProjects.has(projectId))
+      throw new Error("A branch switch is already in progress");
+    if (
+      this.store
+        .summaries(projectId)
+        .some((session) => session.status === "running")
+    )
+      throw new Error(
+        "Wait for running host sessions before switching branches",
+      );
+    this.switchingProjects.add(projectId);
+    try {
+      return await action();
+    } finally {
+      this.switchingProjects.delete(projectId);
+    }
   }
 
   private provider(id: string): HostProvider {
@@ -244,6 +305,8 @@ export class HostEngine {
       let value: HostSession;
       if (command.type === "create") {
         const project = this.store.project(command.projectId);
+        if (this.switchingProjects.has(project.id))
+          throw new Error("Wait for the branch switch to finish");
         this.provider(command.harness);
         value = {
           projectId: project.id,
@@ -256,17 +319,40 @@ export class HostEngine {
             harness: command.harness,
             model: command.model,
             runtimeMode: command.runtimeMode,
-            modelSettings: {},
+            modelSettings: command.modelSettings ?? {},
             title: "New remote session",
             blocks: [],
           },
         };
       } else {
         value = this.store.session(command.sessionId);
+        if (
+          (command.type === "send" || command.type === "compact") &&
+          this.switchingProjects.has(value.projectId)
+        )
+          throw new Error("Wait for the branch switch to finish");
         const provider = this.provider(value.session.harness);
-        if (command.type === "send") {
+        if (command.type === "configure") {
+          if (value.status === "running")
+            throw new Error(
+              "Wait for the current turn before changing settings",
+            );
+          value = {
+            ...value,
+            session: {
+              ...value.session,
+              model: command.model,
+              modelSettings: command.modelSettings,
+              runtimeMode: command.runtimeMode,
+            },
+          };
+        } else if (command.type === "send" || command.type === "compact") {
           if (value.status === "running")
             throw new Error("This session is already running");
+          if (command.type === "compact" && !provider.compact)
+            throw new Error(
+              "Context compaction is unavailable for this provider",
+            );
           const runId = randomUUID();
           value = {
             ...value,
@@ -276,16 +362,22 @@ export class HostEngine {
               ...value.session,
               busy: true,
               pendingQuestion: undefined,
-              title: value.session.blocks.length
-                ? value.session.title
-                : command.text.trim().split("\n")[0].slice(0, 72),
+              title:
+                command.type === "send" && !value.session.blocks.length
+                  ? command.text.trim().split("\n")[0].slice(0, 72)
+                  : value.session.title,
               blocks: [
                 ...value.session.blocks,
-                { id: command.commandId, role: "user", text: command.text },
+                {
+                  id: command.commandId,
+                  role: "user",
+                  text: command.type === "compact" ? "/compact" : command.text,
+                },
               ],
             },
           };
-          effect = (saved) => this.run(saved, command.text);
+          effect = (saved) =>
+            this.run(saved, command.type === "compact" ? null : command.text);
         } else {
           if (value.runId !== command.runId || value.status !== "running")
             throw new Error(
@@ -355,7 +447,7 @@ export class HostEngine {
     return receipt;
   }
 
-  private run(value: HostSession, prompt: string): void {
+  private run(value: HostSession, prompt: string | null): void {
     const { session, runId } = value;
     const provider = this.provider(session.harness);
     const active = { runId: runId!, done: Promise.resolve(), cancelled: false };
@@ -366,15 +458,16 @@ export class HostEngine {
         let error: string | undefined;
         try {
           if (!this.closing && !active.cancelled) {
-            await provider.send({
+            const input: HarnessSessionInput = {
               sessionId: session.id,
               cwd: session.cwd,
               model: session.model,
               modelSettings: session.modelSettings,
               runtimeMode: session.runtimeMode,
-              text: prompt,
               onEvent: (event) => this.event(session.id, runId!, event),
-            });
+            };
+            if (prompt === null) await provider.compact!(input);
+            else await provider.send({ ...input, text: prompt });
           }
         } catch (reason) {
           error = reason instanceof Error ? reason.message : String(reason);
@@ -421,11 +514,7 @@ export class HostEngine {
 
   private event(id: string, runId: string, event: HarnessEvent): void {
     const live = this.live.get(id);
-    if (
-      !live ||
-      live.value.runId !== runId ||
-      live.value.status !== "running"
-    )
+    if (!live || live.value.runId !== runId || live.value.status !== "running")
       return;
     const session = applyHarnessEvent(live.value.session, event);
     if (session === live.value.session) return;

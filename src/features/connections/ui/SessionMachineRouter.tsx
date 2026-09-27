@@ -2,6 +2,8 @@ import { useState, type ReactNode } from "react";
 import {
   rememberedMachine,
   rememberMachine,
+  rememberRemoteTab,
+  remoteTabFor,
   useRemoteMachines,
 } from "../model/connections";
 import { MachinePicker } from "./MachinePicker";
@@ -12,20 +14,29 @@ import { RemoteSessionPane } from "./RemoteSessionPane";
  * no longer choosable) never remounts the local pane. */
 export function SessionMachineRouter({
   cwd,
+  shellId,
   choosable,
   local,
 }: {
   cwd: string;
+  shellId: string;
   choosable: boolean;
   local: (machineControl?: ReactNode) => ReactNode;
 }) {
   const { machines, loaded } = useRemoteMachines(choosable);
   const [choice, setChoice] = useState(() => ({
     cwd,
-    machineId: choosable ? rememberedMachine(cwd) : undefined,
+    shellId,
+    machineId: choosable
+      ? (remoteTabFor(shellId)?.machineId ?? rememberedMachine(cwd))
+      : undefined,
   }));
-  if (choosable && choice.cwd !== cwd)
-    setChoice({ cwd, machineId: rememberedMachine(cwd) });
+  if (choosable && (choice.cwd !== cwd || choice.shellId !== shellId))
+    setChoice({
+      cwd,
+      shellId,
+      machineId: remoteTabFor(shellId)?.machineId ?? rememberedMachine(cwd),
+    });
   const machineId = choosable ? choice.machineId : undefined;
   const picker = choosable ? (
     <MachinePicker
@@ -33,7 +44,8 @@ export function SessionMachineRouter({
       selected={machineId}
       onSelect={(id) => {
         rememberMachine(cwd, id);
-        setChoice({ cwd, machineId: id });
+        rememberRemoteTab(shellId, id);
+        setChoice({ cwd, shellId, machineId: id });
       }}
     />
   ) : undefined;
@@ -52,9 +64,10 @@ export function SessionMachineRouter({
     );
   return (
     <RemoteSessionPane
-      key={`${machine.id}:${cwd}`}
+      key={`${machine.id}:${shellId}`}
       machine={machine}
       project={cwd}
+      shellId={shellId}
       machinePicker={picker}
     />
   );

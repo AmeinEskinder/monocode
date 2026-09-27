@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -95,6 +101,20 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("lets an authenticated desktop browse host folders without reading files", async () => {
+    const s = await setup();
+    mkdirSync(join(s.directory, "checkout"));
+    writeFileSync(join(s.directory, "private.txt"), "secret");
+    const listed = await s.call("projects.browse", { path: s.directory });
+    expect(listed.status).toBe(200);
+    expect(listed.value.result.entries).toEqual([
+      { name: "checkout", path: join(s.directory, "checkout") },
+    ]);
+    expect(
+      (await s.call("projects.browse", { path: s.directory }, "invalid"))
+        .status,
+    ).toBe(401);
+  });
   it("allows a different client to recover work completed while the laptop was disconnected", async () => {
     const s = await setup();
     const create = await s.call("commands.dispatch", {
