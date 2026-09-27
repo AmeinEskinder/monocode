@@ -264,14 +264,15 @@ function handleTextEvent(
   const delta = streamTextDelta(properties.delta);
   const existing = partId ? session.partById.get(partId) : undefined;
   if (!existing || !delta) return;
+  const previous =
+    session.emittedTextByPartId.get(existing.id) ?? existing.text ?? "";
+  const next = appendOpenCodeAssistantTextDelta(previous, delta);
   const nextPart = {
     ...existing,
-    text: (existing.text ?? "") + delta,
+    text: next.nextText,
   };
   session.partById.set(existing.id, nextPart);
   if (textPartRole(session, nextPart) !== "assistant") return;
-  const emitted = session.emittedTextByPartId.get(existing.id) ?? "";
-  const next = appendOpenCodeAssistantTextDelta(emitted, delta);
   session.emittedTextByPartId.set(existing.id, next.nextText);
   const mapped = textDeltaEvent(nextPart, next.deltaToEmit);
   if (mapped) session.onEvent?.(mapped);

@@ -84,6 +84,17 @@ function part(messageID: string, text: string) {
   });
 }
 
+function delta(messageID: string, text: string) {
+  onSseEvent?.({
+    type: "message.part.delta",
+    properties: {
+      sessionID: "text_session",
+      partID: `part_${messageID}`,
+      delta: text,
+    },
+  });
+}
+
 beforeEach(() => {
   onStdout = undefined;
   onSseEvent = undefined;
@@ -123,5 +134,35 @@ it("forwards only incremental OpenCode assistant text", async () => {
   expect(events).toEqual([
     { type: "message.delta", text: "Hel" },
     { type: "message.delta", text: "lo" },
+  ]);
+});
+
+it("does not replay a delta after a stale snapshot", async () => {
+  const events: HarnessEvent[] = [];
+  const result = runOpenCodeTextPrompt({
+    cwd: "/repo",
+    model: "openrouter/anthropic/claude-haiku",
+    prompt: "question",
+    onEvent: (event) => events.push(event),
+  });
+
+  await waitFor(() => promptStarted, "prompt");
+  message("assistant_message", "assistant");
+  part("assistant_message", "Hello");
+  part("assistant_message", "Hel");
+  delta("assistant_message", "!");
+  message("assistant_message", "assistant");
+  finishPrompt?.({
+    status: 200,
+    body: JSON.stringify({
+      info: {},
+      parts: [{ type: "text", text: "Hello!" }],
+    }),
+  });
+
+  await expect(result).resolves.toBe("Hello!");
+  expect(events).toEqual([
+    { type: "message.delta", text: "Hello" },
+    { type: "message.delta", text: "!" },
   ]);
 });
