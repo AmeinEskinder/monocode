@@ -185,6 +185,10 @@ export function useBtwConversation({
   ]);
 
   useEffect(() => {
+    if (!available) setRequestedOpen(false);
+  }, [available]);
+
+  useEffect(() => {
     if (
       optimistic &&
       entries.some(
@@ -208,6 +212,10 @@ export function useBtwConversation({
   }, [entries]);
 
   const finishClose = () => {
+    // Availability can disappear without an explicit close (for example when
+    // the session changes harness). Do not leave a latent open request that
+    // reopens the sheet if availability later returns.
+    setRequestedOpen(false);
     setRendered(false);
     setDrafts([]);
     draftTextsRef.current = {};
@@ -290,6 +298,19 @@ export function useBtwConversation({
      */
     openWith(text: string, options?: { draft?: boolean }): boolean {
       if (!available) return false;
+      const question = text.trim();
+      if (!question && !btwOpenTargetTurnId(turns, blocks, harness, managed)) {
+        const existing =
+          tabs.find((tab) => tab.id === activeTabId) ?? tabs[tabs.length - 1];
+        if (!existing) return false;
+        setActiveId(existing.id);
+        setSeed((current) => ({
+          key: current.key + 1,
+          text: draftTextsRef.current[existing.id] ?? "",
+        }));
+        setRequestedOpen(true);
+        return true;
+      }
       const previousActiveId = activeTabId;
       const tab = startDraft();
       if (!tab) return false;
@@ -299,7 +320,6 @@ export function useBtwConversation({
         setSeed((current) => ({ key: current.key + 1, text }));
         return true;
       }
-      const question = text.trim();
       const tabModel = baseModelFor(tab);
       const tabHarness = tabHarnessFor(blocks, tab, harness);
       if (question && tabHarness) {

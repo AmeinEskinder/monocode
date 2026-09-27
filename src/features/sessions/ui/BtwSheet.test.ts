@@ -239,6 +239,40 @@ describe("BTW conversation", () => {
     expect(container.querySelector("[data-btw-overlay]")).toBeNull();
   });
 
+  it("stays closed when availability returns after forcing the sheet closed", async () => {
+    await render();
+    await act(async () => void btw.openWith(""));
+    expect(btw.open).toBe(true);
+
+    await render({ available: false });
+    expect(btw.open).toBe(false);
+    expect(container.querySelector("[data-btw-overlay]")).toBeNull();
+
+    await render({ available: true });
+    expect(btw.open).toBe(false);
+    expect(container.querySelector("[data-btw-overlay]")).toBeNull();
+  });
+
+  it("opens saved threads when there is no eligible turn for a new draft", async () => {
+    const onSubmit = vi.fn();
+    await render({
+      blocks: session([thread("t1", "Saved question", 1)]),
+      harness: "fx",
+      onSubmit,
+    });
+
+    let opened = false;
+    await act(async () => {
+      opened = btw.openWith("");
+    });
+
+    expect(opened).toBe(true);
+    expect(btw.open).toBe(true);
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["Saved question"]);
+    expect(container.textContent).toContain("Saved question answered");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("asks the active tab from the composer and keeps text while it runs", async () => {
     const onSubmit = vi.fn();
     await render({ onSubmit });
