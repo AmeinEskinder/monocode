@@ -69,7 +69,7 @@ function message(id: string, role: "assistant" | "user") {
   });
 }
 
-function part(messageID: string, text: string) {
+function part(messageID: string, text: string, ended = false) {
   onSseEvent?.({
     type: "message.part.updated",
     properties: {
@@ -79,6 +79,7 @@ function part(messageID: string, text: string) {
         sessionID: "text_session",
         type: "text",
         text,
+        time: ended ? { start: 1, end: 2 } : { start: 1 },
       },
     },
   });
@@ -164,5 +165,61 @@ it("does not replay a delta after a stale snapshot", async () => {
   expect(events).toEqual([
     { type: "message.delta", text: "Hello" },
     { type: "message.delta", text: "!" },
+  ]);
+});
+
+it("does not replay a delta after an out-of-order completed snapshot", async () => {
+  const events: HarnessEvent[] = [];
+  const result = runOpenCodeTextPrompt({
+    cwd: "/repo",
+    model: "openrouter/anthropic/claude-haiku",
+    prompt: "question",
+    onEvent: (event) => events.push(event),
+  });
+
+  await waitFor(() => promptStarted, "prompt");
+  message("assistant_message", "assistant");
+  part("assistant_message", "Hello", true);
+  part("assistant_message", "");
+  delta("assistant_message", "lo");
+  finishPrompt?.({
+    status: 200,
+    body: JSON.stringify({
+      info: {},
+      parts: [{ type: "text", text: "Hello" }],
+    }),
+  });
+
+  await expect(result).resolves.toBe("Hello");
+  expect(events).toEqual([{ type: "message.delta", text: "Hello" }]);
+});
+
+it("buffers a delta that arrives before its part snapshot", async () => {
+  const events: HarnessEvent[] = [];
+  const result = runOpenCodeTextPrompt({
+    cwd: "/repo",
+    model: "openrouter/anthropic/claude-haiku",
+    prompt: "question",
+    onEvent: (event) => events.push(event),
+  });
+
+  await waitFor(() => promptStarted, "prompt");
+  delta("assistant_message", "Hel");
+  message("assistant_message", "assistant");
+  part("assistant_message", "");
+  delta("assistant_message", "lo");
+  part("assistant_message", "Hello", true);
+  finishPrompt?.({
+    status: 200,
+    body: JSON.stringify({
+      info: {},
+      parts: [{ type: "text", text: "Hello" }],
+    }),
+  });
+
+  await expect(result).resolves.toBe("Hello");
+  expect(events).toEqual([
+    { type: "message.delta", text: "Hel" },
+    { type: "message.delta", text: "lo" },
   ]);
 });

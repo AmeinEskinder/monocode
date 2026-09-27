@@ -43,6 +43,7 @@ type LiveText = {
   messageRoleById: Map<string, "assistant" | "user" | "hidden">;
   partById: Map<string, OpenCodePart>;
   emittedTextByPartId: Map<string, string>;
+  pendingTextDeltaByPartId: Map<string, string>;
   onEvent?: (event: HarnessEvent) => void;
 };
 
@@ -210,6 +211,7 @@ async function startLive(
       messageRoleById: new Map(),
       partById: new Map(),
       emittedTextByPartId: new Map(),
+      pendingTextDeltaByPartId: new Map(),
       onEvent: undefined,
     };
     live = session;
@@ -251,8 +253,20 @@ function handleTextEvent(
     return;
   }
   if (event.type === "message.part.updated") {
-    const part = parseTextPart(properties.part);
+    let part = parseTextPart(properties.part);
     if (!part) return;
+    const pendingDelta = session.pendingTextDeltaByPartId.get(part.id);
+    if (pendingDelta) {
+      if (part.time?.end === undefined) {
+        part = {
+          ...part,
+          text: mergeOpenCodeAssistantText(pendingDelta, part.text ?? "")
+            .latestText,
+        };
+      }
+      session.pendingTextDeltaByPartId.delete(part.id);
+    }
+    part = mergeTextPart(session.partById.get(part.id), part);
     session.partById.set(part.id, part);
     if (textPartRole(session, part) === "assistant") {
       emitTextPart(session, part);
@@ -263,7 +277,16 @@ function handleTextEvent(
   const partId = stringField(properties, "partID");
   const delta = streamTextDelta(properties.delta);
   const existing = partId ? session.partById.get(partId) : undefined;
-  if (!existing || !delta) return;
+  if (!partId || !delta) return;
+  if (!existing) {
+    const pending = session.pendingTextDeltaByPartId.get(partId) ?? "";
+    session.pendingTextDeltaByPartId.set(partId, pending + delta);
+    return;
+  }
+  // OpenCode publishes the completed part snapshot with time.end after all
+  // text deltas. If SSE delivery reorders those publications, the snapshot
+  // already contains any delta that arrives after it.
+  if (existing.time?.end !== undefined) return;
   const previous =
     session.emittedTextByPartId.get(existing.id) ?? existing.text ?? "";
   const next = appendOpenCodeAssistantTextDelta(previous, delta);
@@ -304,11 +327,30 @@ function parseTextPart(value: unknown): OpenCodePart | null {
   if (!record || !id || (type !== "text" && type !== "reasoning")) {
     return null;
   }
+  const time = asRecord(record.time);
+  const start = typeof time?.start === "number" ? time.start : undefined;
+  const end = typeof time?.end === "number" ? time.end : undefined;
   return {
     id,
     type,
     messageID: stringField(record, "messageID"),
     text: typeof record.text === "string" ? record.text : undefined,
+    time: start !== undefined || end !== undefined ? { start, end } : undefined,
+  };
+}
+
+function mergeTextPart(
+  previous: OpenCodePart | undefined,
+  next: OpenCodePart,
+): OpenCodePart {
+  if (!previous) return next;
+  if (previous.time?.end !== undefined && next.time?.end === undefined) {
+    return previous;
+  }
+  return {
+    ...next,
+    text: mergeOpenCodeAssistantText(previous.text, next.text ?? "").latestText,
+    time: next.time ?? previous.time,
   };
 }
 
