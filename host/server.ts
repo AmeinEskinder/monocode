@@ -67,7 +67,20 @@ export function createHostServer(
           }),
         );
         return result;
-      })();
+      })().then(
+        (result) => {
+          if (
+            Object.keys(result.errors).length &&
+            catalogs.get(cwd) === catalog
+          )
+            catalogs.delete(cwd);
+          return result;
+        },
+        (error) => {
+          if (catalogs.get(cwd) === catalog) catalogs.delete(cwd);
+          throw error;
+        },
+      );
       catalogs.set(cwd, catalog);
     }
     return catalog;

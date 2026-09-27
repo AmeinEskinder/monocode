@@ -14,6 +14,11 @@ import { HostStore } from "./store";
 import { createHostServer } from "./server";
 import type { SendTurnInput } from "../src/integrations/harness/core/types";
 
+const modelProbe = vi.hoisted(() => vi.fn());
+vi.mock("../src/integrations/harness/providers/codex/codexCatalog", () => ({
+  discoverCodexModels: modelProbe,
+}));
+
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -101,6 +106,18 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("retries model discovery after a provider becomes available", async () => {
+    const s = await setup();
+    modelProbe.mockRejectedValueOnce(new Error("Login required"));
+    modelProbe.mockResolvedValueOnce([{ id: "codex:test", name: "Test" }]);
+    const first = await s.call("models.list", { projectId: s.project.id });
+    expect(first.value.result.errors.codex).toBe("Login required");
+    const second = await s.call("models.list", { projectId: s.project.id });
+    expect(second.value.result.models.codex).toEqual([
+      { id: "codex:test", name: "Test" },
+    ]);
+    expect(modelProbe).toHaveBeenCalledTimes(2);
+  });
   it("lets an authenticated desktop browse host folders without reading files", async () => {
     const s = await setup();
     mkdirSync(join(s.directory, "checkout"));

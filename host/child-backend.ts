@@ -6,6 +6,7 @@ import {
 import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ChildBackend } from "../src/integrations/harness/core/child";
 import { providerLaunch, resolveProvider } from "./process";
 
@@ -52,6 +53,25 @@ export class HostChildBackend implements ChildBackend {
         return { path: await this.resolve("codex") } as T;
       case "harness_resolve_claude":
         return { path: await this.resolve("claude") } as T;
+      case "harness_exec": {
+        const commandPath = await this.resolve("claude");
+        if (
+          args.binaryProvider !== "claude" ||
+          args.command !== commandPath ||
+          !Array.isArray(args.args) ||
+          args.args.length !== 1 ||
+          args.args[0] !== "--version"
+        )
+          throw new Error("Unsupported headless catalog command");
+        const launch = await providerLaunch(commandPath, ["--version"]);
+        const { stdout } = await exec(launch.command, launch.args, {
+          cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+          timeout: 10_000,
+          maxBuffer: 1024 * 1024,
+          windowsHide: true,
+        });
+        return stdout as T;
+      }
       case "harness_spawn":
         return (await this.start(id, args)) as T;
       case "harness_write": {
@@ -99,13 +119,21 @@ export class HostChildBackend implements ChildBackend {
       args.args as string[],
     );
     if (this.closing) throw new Error("Host is stopping");
-    const child = spawn(launch.command, launch.args, {
-      cwd: String(args.cwd),
-      stdio: "pipe",
-      detached: process.platform !== "win32",
-      windowsHide: true,
-      env: { ...process.env, MONOCODE_HOST: "1" },
-    });
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./provider-guard.mjs", import.meta.url)),
+        launch.command,
+        ...launch.args,
+      ],
+      {
+        cwd: String(args.cwd),
+        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        env: { ...process.env, MONOCODE_HOST: "1" },
+      },
+    );
     this.children.set(id, child);
     child.stdin.on("error", () => {
       /* write callbacks report failures */

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   applySessionSync,
   type HostCommand,
@@ -261,8 +261,12 @@ export function useRemoteProjectSessions(
   enabled = true,
 ): RemoteHistoryGroup[] {
   const { machines } = useRemoteMachines(enabled);
+  const machinesRef = useRef(machines);
+  machinesRef.current = machines;
   const [groups, setGroups] = useState<RemoteHistoryGroup[]>([]);
   const [refresh, setRefresh] = useState(0);
+  const failures = useRef(new Map<string, { count: number; next: number }>());
+  const machinesKey = JSON.stringify(machines);
   useEffect(() => {
     if (!enabled) return;
     const changed = () => setRefresh((value) => value + 1);
@@ -274,25 +278,36 @@ export function useRemoteProjectSessions(
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      const mapped = machines.flatMap((machine) => {
+      const mapped = machinesRef.current.flatMap((machine) => {
         const workspace = workspaceFor(project, machine.environmentId);
         return workspace ? [{ machine, workspace }] : [];
       });
       const rows = await Promise.all(
         mapped.map(async ({ machine, workspace }) => {
           let sessions = cachedSessions(project, machine.environmentId);
-          try {
-            sessions = await remoteRequest<HostSessionSummary[]>(
-              machine.id,
-              "sessions.list",
-              { projectId: workspace.id },
-            );
-            localStorage.setItem(
-              historyKey(project, machine.environmentId),
-              JSON.stringify(sessions),
-            );
-          } catch {
-            // Last known history stays navigable while the machine reconnects.
+          const key = JSON.stringify([project, machine.id, workspace.id]);
+          const retry = failures.current.get(key);
+          if (!retry || retry.next <= Date.now()) {
+            try {
+              sessions = await remoteRequest<HostSessionSummary[]>(
+                machine.id,
+                "sessions.list",
+                { projectId: workspace.id },
+              );
+              if (!disposed)
+                localStorage.setItem(
+                  historyKey(project, machine.environmentId),
+                  JSON.stringify(sessions),
+                );
+              failures.current.delete(key);
+            } catch {
+              // Keep cached history and back off while SSH is unavailable.
+              const count = Math.min(4, (retry?.count ?? 0) + 1);
+              failures.current.set(key, {
+                count,
+                next: Date.now() + Math.min(30_000, 3_000 * 2 ** count),
+              });
+            }
           }
           return {
             machine,
@@ -309,6 +324,6 @@ export function useRemoteProjectSessions(
       disposed = true;
       clearTimeout(timer);
     };
-  }, [enabled, project, machines, refresh]);
+  }, [enabled, project, machinesKey, refresh]);
   return groups;
 }

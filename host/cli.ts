@@ -179,8 +179,11 @@ Connect another computer using an SSH forward to the loopback port.`);
   if (command === "revoke") {
     if (!args[1] || args[1].startsWith("--"))
       throw new Error("Provide a device ID to revoke");
-    store.db.prepare("DELETE FROM devices WHERE id=?").run(args[1]);
+    const { changes } = store.db
+      .prepare("DELETE FROM devices WHERE id=?")
+      .run(args[1]);
     store.close();
+    if (!changes) throw new Error("Device not found");
     console.log("Device revoked");
     return;
   }

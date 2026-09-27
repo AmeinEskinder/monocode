@@ -193,6 +193,7 @@ export class HostEngine {
       timer?: ReturnType<typeof setTimeout>;
     }
   >();
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private closing = false;
 
   constructor(
@@ -274,8 +275,8 @@ export class HostEngine {
     live.timer = undefined;
     if (!live.events.length) return;
     const events = live.events;
-    live.events = [];
     live.value = this.save(live.value, { type: "events", events });
+    live.events = [];
   }
 
   private scheduledFlush(id: string, provider: HostProvider): void {
@@ -288,6 +289,49 @@ export class HostEngine {
       );
       void provider.stop(id);
     }
+  }
+
+  private retrySettlement(
+    id: string,
+    runId: string,
+    provider: HostProvider,
+  ): void {
+    if (this.closing || this.retryTimers.has(id)) return;
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(id);
+      void (async () => {
+        try {
+          await provider.stop(id);
+          this.flush(id);
+          const latest = this.store.session(id);
+          if (latest.runId === runId && latest.status === "running")
+            this.save(
+              this.settled(
+                latest,
+                "interrupted",
+                "Session storage failed during this turn. Inspect its work before continuing.",
+              ),
+              { type: "interrupted", reason: "persistence failure" },
+            );
+          this.live.delete(id);
+          this.running.delete(id);
+          if (latest.session.providerSessionId)
+            provider.bind(
+              id,
+              latest.session.providerSessionId,
+              latest.session.cwd,
+            );
+        } catch (error) {
+          console.error(
+            "Retrying session persistence:",
+            error instanceof Error ? error.message : "unknown error",
+          );
+          this.retrySettlement(id, runId, provider);
+        }
+      })();
+    }, 1_000);
+    timer.unref?.();
+    this.retryTimers.set(id, timer);
   }
 
   command(raw: unknown): CommandReceipt {
@@ -502,13 +546,12 @@ export class HostEngine {
       })
       .catch((error) => {
         clearTimeout(this.live.get(session.id)?.timer);
-        this.live.delete(session.id);
-        this.running.delete(session.id);
         console.error(
           "Session persistence failed; stopping its provider:",
           error instanceof Error ? error.message : "unknown error",
         );
         void provider.stop(session.id);
+        this.retrySettlement(session.id, runId!, provider);
       });
   }
 
@@ -568,6 +611,8 @@ export class HostEngine {
 
   async close(): Promise<void> {
     this.closing = true;
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
     await Promise.all(
       [...this.running.keys()].map((id) =>
         this.provider(this.store.session(id).session.harness).stop(id),

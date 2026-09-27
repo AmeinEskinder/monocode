@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { copyFile } from "node:fs/promises";
 
 await build({
   entryPoints: ["host/cli.ts"],
@@ -11,3 +12,4 @@ await build({
   define: { "import.meta.hot": "undefined" },
   sourcemap: true,
 });
+await copyFile("host/provider-guard.mjs", "build/host/provider-guard.mjs");

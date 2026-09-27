@@ -49,8 +49,12 @@ export class HostStore {
       this.db.exec("COMMIT");
       return value;
     } catch (error) {
-      this.db.exec("ROLLBACK");
       this.cache.clear();
+      try {
+        this.db.exec("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Could not roll back host transaction:", rollbackError);
+      }
       throw error;
     }
   }

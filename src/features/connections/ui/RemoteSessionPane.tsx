@@ -67,6 +67,7 @@ export function RemoteSessionPane({
   const [directory, setDirectory] = useState<HostDirectory>();
   const [browsing, setBrowsing] = useState(false);
   const [catalog, setCatalog] = useState<HostModelCatalog>();
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [branches, setBranches] = useState<HostBranches>();
   const [branchChoice, setBranchChoice] = useState("");
   const [switchingBranch, setSwitchingBranch] = useState(false);
@@ -213,7 +214,7 @@ export function RemoteSessionPane({
     return () => {
       disposed = true;
     };
-  }, [machine.id, descriptor?.environmentId, workspace?.id]);
+  }, [machine.id, descriptor?.environmentId, workspace?.id, catalogRefresh]);
 
   useEffect(() => {
     if (sessionId || !catalog) return;
@@ -720,9 +721,16 @@ export function RemoteSessionPane({
                 {modelControls}
               </div>
               {catalog?.errors[provider] && (
-                <p role="alert" className="text-[12px] text-red-400">
-                  Could not load models: {catalog.errors[provider]}
-                </p>
+                <div role="alert" className="text-[12px] text-red-400">
+                  Could not load models: {catalog.errors[provider]}{" "}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => setCatalogRefresh((value) => value + 1)}
+                  >
+                    Retry
+                  </button>
+                </div>
               )}
               <p className="text-[12px] text-content/45">
                 Uses the current checkout and provider account on the host.

@@ -66,6 +66,9 @@ it(
         );
       }
       await run("revoke", device.id);
+      await expect(run("revoke", device.id)).rejects.toThrow(
+        "Device not found",
+      );
       expect((await describe()).status).toBe(401);
       expect((await run("stop")).stdout).toContain("Host is stopping");
       await vi.waitFor(() =>

@@ -99,6 +99,8 @@ impl Askpass {
             while !shutdown.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Accepted sockets can inherit the listener's nonblocking mode.
+                        let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
                         let request = read_line(&mut stream)

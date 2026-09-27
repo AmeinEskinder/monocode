@@ -60,6 +60,38 @@ function setup() {
 }
 
 describe("headless session ownership", () => {
+  it("preserves the transaction error and invalidates cached state if rollback fails", () => {
+    const { store, id } = setup();
+    const cached = store.session(id);
+    store.db
+      .prepare("UPDATE sessions SET snapshot=? WHERE id=?")
+      .run(
+        JSON.stringify({
+          ...cached,
+          session: { ...cached.session, title: "Updated" },
+        }),
+        id,
+      );
+    const exec = store.db.exec.bind(store.db);
+    const rollback = vi.spyOn(store.db, "exec").mockImplementation((sql) => {
+      if (sql === "ROLLBACK") throw new Error("rollback failed");
+      return exec(sql);
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const original = new Error("transaction failed");
+    try {
+      expect(() =>
+        store.transaction(() => {
+          throw original;
+        }),
+      ).toThrow(original);
+      expect(store.session(id).session.title).toBe("Updated");
+    } finally {
+      rollback.mockRestore();
+      log.mockRestore();
+      store.db.exec("ROLLBACK");
+    }
+  });
   it("keeps the checkout idle while a branch switch is in progress", async () => {
     const { engine, project, id, turns } = setup();
     let finishSwitch = () => {};
@@ -309,6 +341,81 @@ describe("headless session ownership", () => {
       value.session.cwd,
     );
     await recovered.close();
+  });
+
+  it("retries a failed event write and settles the stopped turn", async () => {
+    const { engine, store, turns, id } = setup();
+    engine.command({
+      type: "send",
+      commandId: "send",
+      sessionId: id,
+      text: "Work",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    const original = store.save.bind(store);
+    let failed = false;
+    vi.spyOn(store, "save").mockImplementation((value, event) => {
+      if (!failed && (event as { type?: string }).type === "events") {
+        failed = true;
+        throw new Error("temporary storage error");
+      }
+      return original(value, event);
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      turns[0].input.onEvent({
+        type: "message.delta",
+        text: "Retained output",
+      });
+      turns[0].finish();
+      await vi.waitFor(
+        () => expect(store.session(id).status).toBe("interrupted"),
+        {
+          timeout: 4_000,
+        },
+      );
+      expect(
+        store
+          .session(id)
+          .session.blocks.some((block) => block.text === "Retained output"),
+      ).toBe(true);
+      expect(store.session(id).session.busy).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("retries a failed final settlement", async () => {
+    const { engine, store, turns, id } = setup();
+    engine.command({
+      type: "send",
+      commandId: "send",
+      sessionId: id,
+      text: "Work",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    const original = store.save.bind(store);
+    let failed = false;
+    vi.spyOn(store, "save").mockImplementation((value, event) => {
+      if (!failed && (event as { type?: string }).type === "settled") {
+        failed = true;
+        throw new Error("temporary storage error");
+      }
+      return original(value, event);
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      turns[0].finish();
+      await vi.waitFor(
+        () => expect(store.session(id).status).toBe("interrupted"),
+        {
+          timeout: 4_000,
+        },
+      );
+      expect(store.session(id).session.busy).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("batches streamed output and syncs only changed blocks", async () => {
