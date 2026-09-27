@@ -86,7 +86,10 @@ describe("Composer question focus", () => {
     busy = false,
     focusToken = 0,
     initialDraft?: string,
-    onBtwCommand?: (text: string) => boolean | void,
+    onBtwCommand?: (
+      text: string,
+      options?: { draft?: boolean },
+    ) => boolean | void,
     onSubmit: (text: string, attachments: Attachment[]) => void = () => {},
   ) {
     await act(async () =>
@@ -143,6 +146,33 @@ describe("Composer question focus", () => {
     expect(onBtwCommand).toHaveBeenCalledWith(text);
     expect(onSubmit).not.toHaveBeenCalled();
     expect(textarea.value).toBe("");
+  });
+
+  async function typeInto(textarea: HTMLTextAreaElement, value: string) {
+    await act(async () => {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("opens BTW as soon as `/btw ` is typed and hands over the rest", async () => {
+    const onBtwCommand = vi.fn(() => true);
+    await renderComposer(undefined, vi.fn(), false, 0, undefined, onBtwCommand);
+    const textarea = container.querySelector("textarea")!;
+    await typeInto(textarea, "/btw");
+    expect(onBtwCommand).not.toHaveBeenCalled();
+
+    await typeInto(textarea, "/btw why");
+    expect(onBtwCommand).toHaveBeenCalledWith("why", { draft: true });
+    expect(textarea.value).toBe("");
+  });
+
+  it("leaves a typed `/btw ` alone when BTW is unavailable", async () => {
+    const onBtwCommand = vi.fn(() => false);
+    await renderComposer(undefined, vi.fn(), false, 0, undefined, onBtwCommand);
+    const textarea = container.querySelector("textarea")!;
+    await typeInto(textarea, "/btw ");
+    expect(textarea.value).toBe("/btw ");
   });
 
   it("keeps the draft when onBtwCommand rejects the command", async () => {

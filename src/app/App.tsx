@@ -7638,6 +7638,7 @@ export default function App({
         modelSettings: input.thread.modelSettings ?? input.source.modelSettings,
         threadId: input.thread.providerThreadId,
         onThreadId: (providerThreadId) => {
+          if (controller.signal.aborted) return;
           updateBtwThread(
             input.sessionId,
             input.userBlockId,
@@ -7653,12 +7654,13 @@ export default function App({
           );
         },
         onEvent: (event) => {
+          if (controller.signal.aborted) return;
           updateBtwThread(
             input.sessionId,
             input.userBlockId,
             input.thread.id,
             (thread) =>
-              thread
+              thread?.status === "running"
                 ? {
                     ...thread,
                     updatedAt: Date.now(),
@@ -7936,6 +7938,60 @@ export default function App({
       removeBtwThread(sessionId, sourceUserId, threadId);
     },
     [removeBtwThread],
+  );
+
+  // Stopping keeps whatever the side answer had streamed, like stopping a
+  // main turn, and leaves the thread ready for the next question.
+  const onBtwStop = useCallback(
+    (sessionId: string, turn: Block[], threadId: string) => {
+      const sourceUserId = turn.find((block) => block.role === "user")?.id;
+      if (!sourceUserId) return;
+      const key = `${sessionId}:${threadId}`;
+      btwRequestsRef.current.get(key)?.controller.abort();
+      btwRequestsRef.current.delete(key);
+      updateBtwThread(sessionId, sourceUserId, threadId, (thread) => {
+        if (!thread || thread.status !== "running") return thread;
+        const harness = thread.harness;
+        const userMessageId =
+          thread.messages[thread.messages.length - 1]?.id ?? thread.id;
+        const pending = thread.pendingBlocks ?? [];
+        const blocks =
+          pending.length > 0 && harness
+            ? sealBtwResponseBlocks(
+                pending,
+                harness,
+                thread.model ?? "",
+                userMessageId,
+              )
+            : [];
+        const text = blocks
+          .filter((block) => block.role === "assistant")
+          .map((block) => block.text)
+          .join("\n\n")
+          .trim();
+        const now = Date.now();
+        return {
+          ...thread,
+          status: "ready",
+          updatedAt: now,
+          pendingBlocks: undefined,
+          error: undefined,
+          messages: blocks.length
+            ? [
+                ...thread.messages,
+                {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  text,
+                  createdAt: now,
+                  blocks,
+                },
+              ]
+            : thread.messages,
+        };
+      });
+    },
+    [updateBtwThread],
   );
 
   const onBtwRetry = useCallback(
@@ -10051,6 +10107,7 @@ export default function App({
     onBtwSubmit,
     onBtwRetry,
     onBtwDelete,
+    onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
   };
