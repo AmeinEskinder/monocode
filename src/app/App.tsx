@@ -541,10 +541,8 @@ import {
   rememberRemoteSession,
   remotePendingWorktree,
   remoteTabCwd,
-  knownRemoteMachine,
   remoteSessionFor,
 } from "../features/connections/model/connections";
-import { preloadRemoteSession } from "../features/connections/ui/RemoteSession";
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
@@ -2182,10 +2180,8 @@ export default function App({
     projectCwd,
   ]);
 
-  const remoteOpenRequest = useRef(0);
   const onSelectRemoteSession = useCallback(
-    async (project: string, remoteSessionId: string) => {
-      const request = ++remoteOpenRequest.current;
+    (project: string, remoteSessionId: string) => {
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
@@ -2202,36 +2198,8 @@ export default function App({
         activateTab(existing.tab.id, existing.shellId);
         return;
       }
-      // Like a local session, switch once the transcript is here so the pane
-      // never shows an empty conversation first. A slow host still opens
-      // after a moment and fills in when its reply arrives.
-      const remote = remoteProjectFor(project);
-      const machine = remote && knownRemoteMachine(remote.environmentId);
-      if (machine) {
-        await Promise.race([
-          preloadRemoteSession(machine.id, remoteSessionId).catch(() => {}),
-          new Promise((resolve) => setTimeout(resolve, 1_500)),
-        ]);
-        if (request !== remoteOpenRequest.current) return;
-      }
-      const tabs = tabsRef.current;
-      const blankTab =
-        tabs.find((tab) =>
-          tab.id === activeTabIdRef.current &&
-          sameProjectPath(project, workspaceTabCwd(tab, sessionsRef.current) ?? "") &&
-          isBlankWorkspaceTab(tab, sessionsRef.current),
-        ) ??
-        tabs.find((tab) =>
-          sameProjectPath(project, workspaceTabCwd(tab, sessionsRef.current) ?? "") &&
-          isBlankWorkspaceTab(tab, sessionsRef.current),
-        );
-      if (blankTab) {
-        const shellId = leafIds(blankTab.layout)[0];
-        rememberRemoteSession(shellId, remoteSessionId);
-        activateTab(blankTab.id, shellId);
-        setComposerFocused(true);
-        return;
-      }
+      // Reserve a dedicated tab immediately. An apparently blank remote tab
+      // may hold composer text or a create/upload that the host has not accepted.
       const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
       const tab = newTab(session.id);
       rememberRemoteSession(session.id, remoteSessionId);
@@ -2448,6 +2416,7 @@ export default function App({
   const onOpenTerminal = useCallback(
     (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
       const workdir = cwd || gitCwd;
+      if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir)) return;
       if (openProjectTerminal(workdir)) return;
 
       if (asWorkspaceTab || !activeTab) {

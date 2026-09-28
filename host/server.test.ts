@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 import { HostEngine } from "./engine";
 import { HostStore } from "./store";
 import { createHostServer } from "./server";
@@ -94,6 +95,7 @@ async function setup() {
     rmSync(directory, { recursive: true, force: true });
   });
   return {
+    url,
     directory,
     engine,
     store,
@@ -108,6 +110,27 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("rejects a credential revoked while its request body is arriving", async () => {
+    const s = await setup();
+    const authenticated = vi.spyOn(s.store, "authenticated");
+    const body = JSON.stringify({ version: 1, environmentId: s.store.environmentId,
+      method: "commands.dispatch", params: { type: "create", commandId: "revoked-create",
+        projectId: s.project.id, harness: "codex", model: "codex:test", runtimeMode: "supervised" } });
+    let req: ReturnType<typeof request>;
+    const response = new Promise<number | undefined>((resolve, reject) => {
+      req = request(s.url, { method: "POST", headers: {
+        Authorization: `Bearer ${s.first.token}`, "Content-Length": Buffer.byteLength(body),
+      } }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode)); });
+      req.on("error", reject);
+      req.write(body.slice(0, 1));
+    });
+    await vi.waitFor(() => expect(authenticated).toHaveBeenCalledTimes(1));
+    s.store.revokeToken(s.first.token);
+    req!.end(body.slice(1));
+    expect(await response).toBe(401);
+    expect(s.store.summaries(s.project.id)).toEqual([]);
+  });
+
   it("uploads an authenticated attachment and sends its host path to the provider", async () => {
     const s = await setup();
     const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -186,6 +209,8 @@ describe("remote host API", () => {
       (await s.call("git.switch", { projectId: s.project.id, branch: "main" }))
         .value.result.current,
     ).toBe("main");
+    // Prime the allowed-root cache before creating a checkout.
+    expect((await s.call("workspace.run", { command: "list_dir", args: { path: s.project.cwd } })).status).toBe(200);
     const created = await s.call("git.worktreeCreate", {
       projectId: s.project.id,
       branch: "feature",
@@ -201,6 +226,9 @@ describe("remote host API", () => {
       }),
     );
     expect(tree.branch).toBe("feature");
+    expect((await s.call("workspace.run", { command: "read_text_file", args: {
+      path: join(tree.path, "file.txt"),
+    } })).value.result).toBe("initial\n");
     expect(
       (await s.call("git.worktrees", { projectId: s.project.id })).value.result
         .worktrees,

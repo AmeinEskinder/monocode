@@ -208,6 +208,7 @@ export async function renameHostWorktreeBranch(
   path: string,
   expectedBranch: string,
   branch: string,
+  stillOwned: () => boolean = () => true,
 ): Promise<HostWorktree> {
   if (!/^mc\/[a-z0-9]{8}$/.test(expectedBranch))
     throw new Error("This is not an automatically created worktree branch");
@@ -225,6 +226,7 @@ export async function renameHostWorktreeBranch(
   if (!tree || tree.isMain || tree.branch !== expectedBranch)
     throw new Error("The worktree branch has changed");
   if (branch === expectedBranch) return tree;
+  if (!stillOwned()) throw new Error("The session no longer owns this branch");
   await exec(
     "git",
     ["branch", "-m", expectedBranch, branch],

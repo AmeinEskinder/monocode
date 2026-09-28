@@ -480,7 +480,7 @@ export function ModelPicker({
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("open_model_picker", onMenu);
     };
-  }, [hotkeys]);
+  }, [hotkeys, source]);
 
   const setSetting = (setting: ModelSetting, value: string) => {
     onSettingsChange({ ...values, [setting.id]: value });
