@@ -453,6 +453,11 @@ describe("remote host API", () => {
     ).toEqual([expect.objectContaining({ path: "src/app.ts" })]);
     expect(
       (
+        await s.call("files.index", { projectId: project.id })
+      ).value.result.sort(),
+    ).toEqual(["new.ts", "src/app.ts"]);
+    expect(
+      (
         await s.call("files.searchContent", {
           projectId: project.id,
           query: "after",

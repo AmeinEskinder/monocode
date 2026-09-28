@@ -30,10 +30,26 @@ vi.mock("../model/fileIndex", () => ({
   peekProjectFiles: vi.fn(() => projectFiles),
   rankProjectFiles,
   recentOpenedFiles: vi.fn(() => []),
+  rememberOpenedFile: vi.fn(),
 }));
 
 vi.mock("../../projects/model/recents", () => ({
-  isLocalProject: () => true,
+  isLocalProject: (path: string) => !path.startsWith("remote:"),
+  isRemoteProjectPath: (path: string) => path.startsWith("remote:"),
+}));
+
+const { loadRemoteFiles } = vi.hoisted(() => ({
+  loadRemoteFiles: vi.fn(async () => [
+    {
+      path: "/home/me/repo/src/App.tsx",
+      relative: "src/App.tsx",
+      name: "App.tsx",
+    },
+  ]),
+}));
+vi.mock("../../connections/model/remoteFileIndex", () => ({
+  loadRemoteFiles,
+  peekRemoteFiles: () => undefined,
 }));
 
 import { FilePicker, reloadActionHint } from "./FilePicker";
@@ -174,4 +190,62 @@ describe("file picker command mode", () => {
       expect(callbacks.onOpenFile).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("file picker on a remote project", () => {
+  const remote = {
+    machineId: "machine-1",
+    projectId: "project-1",
+    projectKey: "remote:env/home/me/repo",
+    cwd: "/home/me/repo",
+  };
+
+  it("lists the host's files and opens the pick on that machine", async () => {
+    const onOpenFile = vi.fn();
+    const onOpenRemoteFile = vi.fn();
+    const onClose = vi.fn();
+    await act(async () =>
+      root.render(
+        createElement(FilePicker, {
+          open: true,
+          cwd: remote.projectKey,
+          initialQuery: "app",
+          remote,
+          onOpenFile,
+          onOpenRemoteFile,
+          onRunAction: vi.fn(),
+          onClose,
+        }),
+      ),
+    );
+    const dialog = document.querySelector<HTMLElement>("[data-file-picker]")!;
+    expect(loadRemoteFiles).toHaveBeenCalledWith(remote);
+    expect(dialog.textContent).toContain("App.tsx");
+
+    press(dialog.querySelector<HTMLInputElement>("input")!, "Enter");
+    expect(onOpenRemoteFile).toHaveBeenCalledExactlyOnceWith({
+      ...remote,
+      relativePath: "src/App.tsx",
+    });
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("asks to connect the machine when its host is unknown", () => {
+    act(() =>
+      root.render(
+        createElement(FilePicker, {
+          open: true,
+          cwd: remote.projectKey,
+          onOpenFile: vi.fn(),
+          onRunAction: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      ),
+    );
+    expect(document.body.textContent).toContain(
+      "Connect this project’s machine to search its files",
+    );
+    expect(loadRemoteFiles).not.toHaveBeenCalled();
+  });
 });

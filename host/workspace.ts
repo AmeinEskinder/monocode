@@ -163,15 +163,11 @@ export async function listHostFiles(
   );
 }
 
-/** Bounded filename search for the remote Explorer and Go to File. */
-export async function searchHostFiles(
-  root: string,
-  input: unknown,
-): Promise<HostFileEntry[]> {
-  if (typeof input !== "string" || input.length > 200)
-    throw new Error("Invalid search");
-  const query = input.trim().toLocaleLowerCase();
-  if (!query) return [];
+/** Upper bound on paths sent for Go to File; larger trees are truncated. */
+const MAX_INDEXED_FILES = 50_000;
+
+/** Every file in the worktree, honoring .gitignore when it is a repository. */
+async function hostFilePaths(root: string): Promise<string[]> {
   let paths: string[];
   try {
     paths = (
@@ -199,7 +195,24 @@ export async function searchHostFiles(
       }
     }
   }
-  return paths
+  return paths;
+}
+
+/** Relative paths of the worktree's files, for fuzzy Go to File on the client. */
+export async function indexHostFiles(root: string): Promise<string[]> {
+  return (await hostFilePaths(root)).slice(0, MAX_INDEXED_FILES);
+}
+
+/** Bounded filename search for the remote Explorer. */
+export async function searchHostFiles(
+  root: string,
+  input: unknown,
+): Promise<HostFileEntry[]> {
+  if (typeof input !== "string" || input.length > 200)
+    throw new Error("Invalid search");
+  const query = input.trim().toLocaleLowerCase();
+  if (!query) return [];
+  return (await hostFilePaths(root))
     .filter((path) => path.toLocaleLowerCase().includes(query))
     .slice(0, 200)
     .map((path) => ({

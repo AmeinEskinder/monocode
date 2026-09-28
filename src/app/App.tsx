@@ -542,7 +542,13 @@ import {
   rememberRemoteSession,
   remotePendingWorktree,
   remoteSessionFor,
+  useRemoteMachines,
 } from "../features/connections/model/connections";
+import {
+  remoteTabCwd,
+  type RemoteFileSource,
+} from "../features/connections/model/remoteFileIndex";
+import { remoteProjectFor } from "../features/connections/model/remoteProjects";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import {
@@ -1451,6 +1457,28 @@ export default function App({
       : undefined;
   const gitCwdRef = useRef(gitCwd);
   gitCwdRef.current = gitCwd;
+  // Go to File in a project on another machine lists the checkout the
+  // sidebar's Explorer shows: the tab's worktree, else the project folder.
+  const filePickerRemote = filePickerOpen
+    ? remoteProjectFor(sidebarCwd)
+    : undefined;
+  const { machines: remoteMachines } = useRemoteMachines(!!filePickerRemote);
+  const filePickerMachine = filePickerRemote
+    ? remoteMachines.find(
+        (machine) => machine.environmentId === filePickerRemote.environmentId,
+      )
+    : undefined;
+  const filePickerRemoteSource: RemoteFileSource | undefined =
+    filePickerRemote && filePickerMachine
+      ? {
+          machineId: filePickerMachine.id,
+          projectId: filePickerRemote.projectId,
+          projectKey: filePickerRemote.key,
+          cwd:
+            remoteTabCwd(filePickerRemote.key, active?.id) ??
+            (gitCwd && gitCwd !== sidebarCwd ? gitCwd : filePickerRemote.cwd),
+        }
+      : undefined;
   const projectBranches = useProjectBranches(
     sidebarCwd,
     Boolean(sidebarCwd) && sidebarCwd !== "~",
@@ -9417,14 +9445,6 @@ export default function App({
     setInboxViewOpen(false);
     setNotesViewOpen(false);
     setAutomationsViewOpen(false);
-    if (isRemoteProjectPath(sidebarCwdRef.current)) {
-      setFilePickerOpen(false);
-      setSessionSidebarOpen(true);
-      setSidebarTab("files");
-      setFilesSearchOpen(true);
-      setSearchFocusToken((token) => token + 1);
-      return;
-    }
     setFilePickerInitialQuery("");
     setFilePickerResetToken((token) => token + 1);
     setFilePickerOpen(true);
@@ -10836,10 +10856,12 @@ export default function App({
             <FilePicker
               key={filePickerResetToken}
               open
-              cwd={gitCwd}
+              cwd={filePickerRemote ? sidebarCwd : gitCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
               onOpenFile={onOpenFile}
+              remote={filePickerRemoteSource}
+              onOpenRemoteFile={onOpenRemoteFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
               }}

@@ -32,6 +32,7 @@ import {
   hostFileDiff,
   hostGitAction,
   hostGitIndex,
+  indexHostFiles,
   listHostFiles,
   readHostFile,
   searchHostContent,
@@ -184,6 +185,7 @@ export function createHostServer(
                 "git.worktreeCreate",
                 "files.read",
                 "files.list",
+                "files.index",
                 "files.search",
                 "files.searchContent",
                 "files.create",
@@ -413,6 +415,15 @@ export function createHostServer(
             result = await listHostFiles(
               await resolveHostWorktreeAsync(project.cwd, params.cwd),
               params.path,
+            );
+            break;
+          }
+          case "files.index": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await indexHostFiles(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
             );
             break;
           }

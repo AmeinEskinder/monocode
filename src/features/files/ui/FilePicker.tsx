@@ -13,11 +13,21 @@ import {
   peekProjectFiles,
   rankProjectFiles,
   recentOpenedFiles,
+  rememberOpenedFile,
   type RankedFile,
 } from "../model/fileIndex";
+import {
+  loadRemoteFiles,
+  peekRemoteFiles,
+  type RemoteFileSource,
+} from "../../connections/model/remoteFileIndex";
+import type { RemoteFileTarget } from "../../connections/model/remoteFiles";
 import { LAYER } from "../../../shared/lib/layers";
 import { fuzzyMatch, type FuzzyHit } from "../../../shared/lib/fuzzy";
-import { isLocalProject } from "../../projects/model/recents";
+import {
+  isLocalProject,
+  isRemoteProjectPath,
+} from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
@@ -44,6 +54,10 @@ type Props = {
   openPaths?: string[];
   initialQuery?: string;
   onOpenFile: OpenFileFn;
+  /** Set when `cwd` is a project on another machine whose host is reachable;
+   * its files are listed from, and opened on, that machine. */
+  remote?: RemoteFileSource;
+  onOpenRemoteFile?: (target: RemoteFileTarget) => void;
   onRunAction: (id: string) => void;
   onClose: () => void;
 };
@@ -54,28 +68,38 @@ export function FilePicker({
   openPaths = [],
   initialQuery = "",
   onOpenFile,
+  remote,
+  onOpenRemoteFile,
   onRunAction,
   onClose,
 }: Props) {
+  // Recents are keyed apart from local paths: a host checkout often has the
+  // same absolute path as a folder on this computer.
+  const recentsKey = remote ? `${remote.projectKey}\n${remote.cwd}` : cwd;
+  const remoteKey = remote
+    ? JSON.stringify([remote.machineId, remote.projectId, remote.cwd])
+    : "";
+  const peekFiles = () =>
+    remote ? (peekRemoteFiles(remote) ?? null) : peekProjectFiles(cwd);
   const search = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const [query, setQuery] = useState(initialQuery);
   const [active, setActive] = useState(0);
-  const [files, setFiles] = useState(() => peekProjectFiles(cwd) ?? []);
-  const [loading, setLoading] = useState(() => peekProjectFiles(cwd) == null);
+  const [files, setFiles] = useState(() => peekFiles() ?? []);
+  const [loading, setLoading] = useState(() => peekFiles() == null);
   const [error, setError] = useState<string | null>(null);
 
   const recents = useMemo(() => {
     const out: string[] = [];
     const seen = new Set<string>();
-    for (const path of [...recentOpenedFiles(cwd), ...openPaths]) {
+    for (const path of [...recentOpenedFiles(recentsKey), ...openPaths]) {
       if (seen.has(path)) continue;
       seen.add(path);
       out.push(path);
     }
     return out;
-  }, [cwd, openPaths, open]);
+  }, [recentsKey, openPaths, open]);
   const paletteMode = query.trim().startsWith(">");
   const actionQuery = paletteMode ? query.trim().slice(1).trim() : "";
 
@@ -104,20 +128,21 @@ export function FilePicker({
     setQuery(initialQuery);
     setActive(0);
     setError(null);
-    const cached = peekProjectFiles(cwd);
+    const searchable = !!remote || isLocalProject(cwd);
+    const cached = peekFiles();
     if (cached) {
       setFiles(cached);
       setLoading(false);
     } else {
       setFiles([]);
-      setLoading(isLocalProject(cwd));
+      setLoading(searchable);
     }
-    if (!isLocalProject(cwd)) {
+    if (!searchable) {
       setLoading(false);
       return;
     }
     let cancelled = false;
-    void loadProjectFiles(cwd, true)
+    void (remote ? loadRemoteFiles(remote) : loadProjectFiles(cwd, true))
       .then((next) => {
         if (cancelled) return;
         setFiles(next);
@@ -131,7 +156,7 @@ export function FilePicker({
     return () => {
       cancelled = true;
     };
-  }, [open, cwd, initialQuery]);
+  }, [open, cwd, remoteKey, initialQuery]);
 
   useEffect(() => {
     setActive((index) =>
@@ -159,7 +184,12 @@ export function FilePicker({
   if (!open) return null;
 
   const pick = (file: RankedFile) => {
-    onOpenFile(file.path, undefined, { exact: true });
+    if (remote) {
+      rememberOpenedFile(recentsKey, file.path);
+      onOpenRemoteFile?.({ ...remote, relativePath: file.relative });
+    } else {
+      onOpenFile(file.path, undefined, { exact: true });
+    }
     onClose();
   };
   const runAction = (action: RankedAction) => {
@@ -196,6 +226,7 @@ export function FilePicker({
 
   const empty = emptyLabel({
     cwd,
+    remote: !!remote,
     query,
     loading,
     error,
@@ -264,6 +295,7 @@ export function FilePicker({
 
 function emptyLabel({
   cwd,
+  remote,
   query,
   loading,
   error,
@@ -273,6 +305,7 @@ function emptyLabel({
   actionCount,
 }: {
   cwd: string;
+  remote: boolean;
   query: string;
   loading: boolean;
   error: string | null;
@@ -283,7 +316,9 @@ function emptyLabel({
 }): string | null {
   if (paletteMode) return actionCount === 0 ? "No matching commands" : null;
   if (error && fileCount === 0) return error;
-  if (!isLocalProject(cwd)) return "Open a project to search files";
+  if (!remote && isRemoteProjectPath(cwd))
+    return "Connect this project’s machine to search its files";
+  if (!remote && !isLocalProject(cwd)) return "Open a project to search files";
   if (loading && fileCount === 0) return "Indexing files…";
   if (fileCount === 0) return "No files found";
   if (matchCount === 0) {

@@ -363,6 +363,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "git.worktreeCreate"
             | "files.read"
             | "files.list"
+            | "files.index"
             | "files.search"
             | "files.searchContent"
             | "files.create"
