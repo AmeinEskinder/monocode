@@ -23,11 +23,6 @@ export type HostModelCatalog = {
   models: Partial<Record<RemoteProvider, AgentModel[]>>;
   errors: Partial<Record<RemoteProvider, string>>;
 };
-export type HostBranches = {
-  current: string | null;
-  branches: string[];
-  remotes?: { remote: string; name: string }[];
-};
 export type HostWorktree = {
   path: string;
   branch: string | null;
@@ -35,7 +30,6 @@ export type HostWorktree = {
   isMain: boolean;
   missing: boolean;
 };
-export type HostWorktrees = { worktrees: HostWorktree[]; defaultRoot: string };
 export type HostSession = {
   session: Session;
   projectId: string;
