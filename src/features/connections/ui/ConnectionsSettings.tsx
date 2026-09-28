@@ -33,6 +33,8 @@ export function ConnectionsSettings() {
   const [answer, setAnswer] = useState("");
   const [answering, setAnswering] = useState(false);
   const [status, setStatus] = useState<Record<string, string>>({});
+  const [needsUpdate, setNeedsUpdate] = useState<Record<string, boolean>>({});
+  const [updatingMachine, setUpdatingMachine] = useState<string>();
   const [removing, setRemoving] = useState<string>();
   const [revoking, setRevoking] = useState(false);
   const [url, setUrl] = useState("http://127.0.0.1:3774");
@@ -73,8 +75,11 @@ export function ConnectionsSettings() {
             setName("");
             setPort("");
             setNotice(
-              `${next.machine.name} is connected. To work on it, click + next to Projects in the project rail and choose Open folder on a machine.`,
+              updatingMachine
+                ? `${next.machine.name} was updated and reconnected.`
+                : `${next.machine.name} is connected. To work on it, click + next to Projects in the project rail and choose Open folder on a machine.`,
             );
+            setUpdatingMachine(undefined);
             setStatus((current) => ({
               ...current,
               [next.machine!.id]: "Connected",
@@ -100,7 +105,7 @@ export function ConnectionsSettings() {
       disposed = true;
       clearTimeout(timer);
     };
-  }, [jobId]);
+  }, [jobId, updatingMachine]);
   useEffect(() => {
     setAnswer("");
     setAnswering(false);
@@ -127,6 +132,17 @@ export function ConnectionsSettings() {
                 throw new Error("Host identity changed");
               if (!host.providers.length)
                 label = "Connected · install Codex or Claude on the host";
+              const update =
+                !host.capabilities?.includes("git.index") ||
+                !host.capabilities?.includes("files.list");
+              if (update)
+                label =
+                  "Connected · host update needed for Explorer and Changes";
+              if (!disposed)
+                setNeedsUpdate((current) => ({
+                  ...current,
+                  [machine.id]: update,
+                }));
             } catch {
               label = "Offline · reconnect to check access";
             }
@@ -142,17 +158,19 @@ export function ConnectionsSettings() {
       clearTimeout(timer);
     };
   }, [machines, busy]);
-  const begin = async (machine?: RemoteMachine) => {
+  const begin = async (machine?: RemoteMachine, upgrade = false) => {
     if (submitting.current) return;
     submitting.current = true;
     setBusy(true);
     setError("");
     setNotice("");
     setJob(undefined);
+    setUpdatingMachine(upgrade ? machine?.id : undefined);
     try {
       const id = machine
         ? await invoke<string>("remote_ssh_reconnect", {
             machineId: machine.id,
+            ...(upgrade ? { upgrade: true } : {}),
           })
         : await invoke<string>("remote_ssh_begin", {
             target: target.trim(),
@@ -260,15 +278,33 @@ export function ConnectionsSettings() {
                   <div className="mt-1 text-[12px] text-content/50">
                     {status[machine.id] ?? "Checking connection…"}
                   </div>
+                  {machine.ssh && needsUpdate[machine.id] ? (
+                    <div className="mt-1 text-[11px] text-content/45">
+                      Updating restarts the host and interrupts active agent
+                      turns.
+                    </div>
+                  ) : null}
                 </div>
                 {machine.ssh && (
-                  <button
-                    className={button}
-                    disabled={busy}
-                    onClick={() => void begin(machine)}
-                  >
-                    Reconnect
-                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {needsUpdate[machine.id] ? (
+                      <button
+                        className={button}
+                        disabled={busy}
+                        title="Downloads the matching host package and restarts the host; active agent turns will be interrupted"
+                        onClick={() => void begin(machine, true)}
+                      >
+                        Update Host
+                      </button>
+                    ) : null}
+                    <button
+                      className={button}
+                      disabled={busy}
+                      onClick={() => void begin(machine)}
+                    >
+                      Reconnect
+                    </button>
+                  </div>
                 )}
                 <button
                   disabled={busy || revoking}

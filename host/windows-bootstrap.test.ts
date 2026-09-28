@@ -45,7 +45,7 @@ beforeAll(async () => {
     `import { appendFileSync } from 'node:fs';
 const action = process.argv[2];
 if (action === '--version') console.log(${JSON.stringify(version)});
-else if (action === 'service') appendFileSync(process.env.MONOCODE_TEST_EVENTS, 'service\\n');
+else if (action === 'service') appendFileSync(process.env.MONOCODE_TEST_EVENTS, 'service ' + process.argv[3] + '\\n');
 else if (action === 'connection-info') console.log(JSON.stringify({ port: 3774, pid: 123 }));
 else process.exit(1);
 `,
@@ -110,10 +110,11 @@ function Expand-Archive([string] $LiteralPath, [string] $DestinationPath) {
     base,
     downloads,
     events,
-    run: () =>
+    run: (forceUpgrade = false) =>
       run(launch, {
         PROCESSOR_ARCHITECTURE: "AMD64",
         MONOCODE_TEST_EVENTS: events,
+        MONOCODE_HOST_FORCE_UPGRADE: forceUpgrade ? "1" : "0",
       }),
   };
 }
@@ -142,6 +143,28 @@ it.skipIf(!shell)(
       );
       expect(versionResult.stdout.trim()).toBe(version);
     }
+  },
+  90_000,
+);
+
+it.skipIf(!shell)(
+  "updates an existing Windows host and restarts its service on request",
+  async () => {
+    const fixture = await install(false);
+    await fixture.run();
+    const oldRuntime = readFileSync(join(fixture.base, "runtime-path"), "utf8");
+    await fixture.run(true);
+    expect(readFileSync(join(fixture.base, "runtime-path"), "utf8")).not.toBe(
+      oldRuntime,
+    );
+    expect(readFileSync(fixture.events, "utf8").trim().split(/\r?\n/)).toEqual([
+      "service install",
+      "service uninstall",
+      "service install",
+    ]);
+    expect(
+      readFileSync(fixture.downloads, "utf8").trim().split(/\r?\n/),
+    ).toHaveLength(4);
   },
   90_000,
 );

@@ -22,7 +22,19 @@ export type HostModelCatalog = {
   models: Partial<Record<RemoteProvider, AgentModel[]>>;
   errors: Partial<Record<RemoteProvider, string>>;
 };
-export type HostBranches = { current: string | null; branches: string[] };
+export type HostBranches = {
+  current: string | null;
+  branches: string[];
+  remotes?: { remote: string; name: string }[];
+};
+export type HostWorktree = {
+  path: string;
+  branch: string | null;
+  head: string;
+  isMain: boolean;
+  missing: boolean;
+};
+export type HostWorktrees = { worktrees: HostWorktree[]; defaultRoot: string };
 export type HostSession = {
   session: Session;
   projectId: string;
@@ -40,6 +52,7 @@ export type HostSessionSummary = Omit<
   id: string;
   title: string;
   harness: RemoteProvider;
+  cwd?: string;
 };
 
 /** `sessions.sync` sends only the blocks that changed after the client's
@@ -101,6 +114,7 @@ export type HostCommand =
       type: "create";
       commandId: string;
       projectId: string;
+      worktreeCwd?: string;
       harness: RemoteProvider;
       model: string;
       modelSettings?: Record<string, string>;

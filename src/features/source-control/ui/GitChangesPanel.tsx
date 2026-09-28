@@ -68,7 +68,10 @@ import {
   saveChangesView,
   type ChangesView,
 } from "../../settings/model/appearance";
-import { generateCommitMessage, generatePrContent } from "../../../integrations/harness";
+import {
+  generateCommitMessage,
+  generatePrContent,
+} from "../../../integrations/harness";
 import { invalidateWatchedFiles } from "../../files/model/fileWatch";
 import { MOD } from "../../../platform/tauri/platform";
 import { applyProjectDiffStats } from "../hooks/useProjectDiffStats";
@@ -248,7 +251,10 @@ export function GitChangesPanel({
                   className="flex h-7 w-full items-center gap-2 px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
                 >
                   {busy === "pull" ? (
-                    <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />
+                    <Loader
+                      className="size-3.5 animate-spin"
+                      strokeWidth={1.75}
+                    />
                   ) : (
                     <RefreshCw className="size-3.5" strokeWidth={1.75} />
                   )}
@@ -282,22 +288,19 @@ export function GitChangesPanel({
         }}
       />
       {graphExpanded ? (
-      <GraphResizeSash
-        height={graphHeight}
-        onHeightPaint={setGraphHeight}
-        onHeightCommit={(next) => {
-          setGraphHeight(next);
-          saveGraphPanelHeight(next);
-        }}
-        maxHeight={() => {
-          const pane = paneRef.current;
-          if (!pane) return GRAPH_PANEL_DEFAULT * 2;
-          return Math.max(
-            GRAPH_PANEL_MIN,
-            pane.clientHeight - 160,
-          );
-        }}
-      />
+        <GraphResizeSash
+          height={graphHeight}
+          onHeightPaint={setGraphHeight}
+          onHeightCommit={(next) => {
+            setGraphHeight(next);
+            saveGraphPanelHeight(next);
+          }}
+          maxHeight={() => {
+            const pane = paneRef.current;
+            if (!pane) return GRAPH_PANEL_DEFAULT * 2;
+            return Math.max(GRAPH_PANEL_MIN, pane.clientHeight - 160);
+          }}
+        />
       ) : null}
       <div
         className={`shrink-0 overflow-hidden border-t border-stroke ${
@@ -397,7 +400,10 @@ function ChangedFiles({
 
   useEffect(() => {
     if (!amendTarget) return;
-    if (amendTarget.branch === index?.branch && amendTarget.head === index?.head) {
+    if (
+      amendTarget.branch === index?.branch &&
+      amendTarget.head === index?.head
+    ) {
       return;
     }
     setAmendTarget(null);
@@ -1069,7 +1075,7 @@ function GitSyncActions({
   );
 }
 
-function FileSection({
+export function FileSection({
   title,
   count,
   open,
@@ -1163,7 +1169,7 @@ type ChangeRowProps = {
   ) => void;
 };
 
-function ChangeList({ files, view, ...rest }: ChangeRowProps) {
+export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
   const tree = useMemo(() => buildChangeTree(files), [files]);
   if (view === "tree") {
     return <ChangeDirChildren dir={tree} depth={0} {...rest} />;
@@ -1494,8 +1500,8 @@ function useDiffIndex(
   index: GitDiffIndex | null;
   reload: () => void;
 } {
-  const [index, setIndex] = useState<GitDiffIndex | null>(
-    () => cachedIndex(cwd),
+  const [index, setIndex] = useState<GitDiffIndex | null>(() =>
+    cachedIndex(cwd),
   );
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((value) => value + 1), []);

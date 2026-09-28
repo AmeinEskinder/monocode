@@ -307,6 +307,12 @@ pub fn remote_request(
             | "git.branches"
             | "git.switch"
             | "files.read"
+            | "files.list"
+            | "files.search"
+            | "files.write"
+            | "git.index"
+            | "git.fileDiff"
+            | "git.action"
     ) {
         return Err("Unsupported remote operation".into());
     }
@@ -360,6 +366,7 @@ fn start_ssh_job(
     target: SshTarget,
     name: String,
     existing: Option<StoredMachine>,
+    upgrade: bool,
 ) -> Result<String, String> {
     let job = Job::new();
     let id = job.view().id;
@@ -381,8 +388,29 @@ fn start_ssh_job(
         let prepared = (|| -> Result<(StoredMachine, Tunnel), String> {
             let askpass = job.askpass()?;
             let mut target = target;
-            let mut machine = if let Some(existing) = existing {
-                job.message("Reconnecting to the machine…");
+            let mut machine = if let Some(mut existing) = existing {
+                if upgrade {
+                    let platform = remote_ssh::detect_platform(&target, &job, &askpass)?;
+                    job.message("Updating MonoCode Host on the machine…");
+                    let output = remote_ssh::run_script(
+                        &target,
+                        platform,
+                        remote_ssh::upgrade_script(platform, target.remote_port),
+                        &job,
+                        &askpass,
+                    )?;
+                    let info: Value = serde_json::from_str(output.lines().last().unwrap_or(""))
+                        .map_err(|_| "Host update returned an invalid response")?;
+                    target.remote_port = info
+                        .get("port")
+                        .and_then(Value::as_u64)
+                        .and_then(|v| u16::try_from(v).ok())
+                        .filter(|p| *p > 0)
+                        .ok_or("Host did not report a valid port")?;
+                    existing.ssh = Some(target.clone());
+                } else {
+                    job.message("Reconnecting to the machine…");
+                }
                 existing
             } else {
                 let platform = remote_ssh::detect_platform(&target, &job, &askpass)?;
@@ -457,6 +485,17 @@ fn start_ssh_job(
                         .into(),
                 );
             }
+            if upgrade {
+                let capabilities = descriptor.get("capabilities").and_then(Value::as_array);
+                let supports = |name: &str| {
+                    capabilities.is_some_and(|entries| {
+                        entries.iter().any(|entry| entry.as_str() == Some(name))
+                    })
+                };
+                if !supports("git.index") || !supports("files.list") {
+                    return Err("The installed host package still lacks Explorer and Changes. Install a newer MonoCode release with updated host packages.".into());
+                }
+            }
             if machine.name.trim().is_empty() {
                 machine.name = descriptor
                     .get("name")
@@ -510,6 +549,7 @@ pub fn remote_ssh_begin(
         },
         name.trim().chars().take(100).collect(),
         None,
+        false,
     )
 }
 
@@ -518,6 +558,7 @@ pub fn remote_ssh_reconnect(
     app: AppHandle,
     state: State<'_, RemoteConnections>,
     machine_id: String,
+    upgrade: Option<bool>,
 ) -> Result<String, String> {
     let machine = {
         let _guard = state
@@ -533,7 +574,13 @@ pub fn remote_ssh_reconnect(
         .ssh
         .clone()
         .ok_or("This connection does not use SSH")?;
-    start_ssh_job(app, target, machine.name.clone(), Some(machine))
+    start_ssh_job(
+        app,
+        target,
+        machine.name.clone(),
+        Some(machine),
+        upgrade.unwrap_or(false),
+    )
 }
 
 #[tauri::command]

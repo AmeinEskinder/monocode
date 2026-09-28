@@ -115,6 +115,16 @@ export type SessionPaneProps = {
   onCwdChange: (sessionId: string, cwd: string) => void;
   onBranchChange: (sessionId: string) => void;
   onWorktreeChange?: (sessionId: string, tree: Worktree) => Promise<void>;
+  onOpenRemoteWorktree?: (
+    project: string,
+    path: string,
+    settings: {
+      harness: HarnessId;
+      model: string;
+      modelSettings: Record<string, string>;
+      runtimeMode: RuntimeMode;
+    },
+  ) => void;
   onWorkspaceModeChange: (
     sessionId: string,
     mode: WorkspaceMode,
@@ -232,6 +242,7 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
       <RemoteSession
         shell={props.session}
         visible={props.visible}
+        onOpenWorktree={props.onOpenRemoteWorktree}
         render={(remote) => <LocalSessionPane {...props} {...remote} />}
       />
     );

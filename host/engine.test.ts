@@ -12,7 +12,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function setup() {
+function setup(harness: "codex" | "claude" = "codex") {
   const directory = mkdtempSync(join(tmpdir(), "monocode-engine-test-"));
   const store = new HostStore(join(directory, "host.db"));
   const project = store.addProject(directory, "Test");
@@ -39,8 +39,8 @@ function setup() {
     type: "create",
     commandId: "create",
     projectId: project.id,
-    harness: "codex",
-    model: "codex:test",
+    harness,
+    model: `${harness}:test`,
     runtimeMode: "supervised",
   });
   cleanups.push(async () => {
@@ -63,15 +63,13 @@ describe("headless session ownership", () => {
   it("preserves the transaction error and invalidates cached state if rollback fails", () => {
     const { store, id } = setup();
     const cached = store.session(id);
-    store.db
-      .prepare("UPDATE sessions SET snapshot=? WHERE id=?")
-      .run(
-        JSON.stringify({
-          ...cached,
-          session: { ...cached.session, title: "Updated" },
-        }),
-        id,
-      );
+    store.db.prepare("UPDATE sessions SET snapshot=? WHERE id=?").run(
+      JSON.stringify({
+        ...cached,
+        session: { ...cached.session, title: "Updated" },
+      }),
+      id,
+    );
     const exec = store.db.exec.bind(store.db);
     const rollback = vi.spyOn(store.db, "exec").mockImplementation((sql) => {
       if (sql === "ROLLBACK") throw new Error("rollback failed");
@@ -227,6 +225,52 @@ describe("headless session ownership", () => {
     ).toThrow("different payload");
   });
 
+  it.each(["codex", "claude"] as const)(
+    "keeps %s turn timing and model provenance after settlement and reconnect",
+    async (harness) => {
+      const { engine, store, turns, id } = setup(harness);
+      engine.command({
+        type: "send",
+        commandId: "first-turn",
+        sessionId: id,
+        text: "Inspect the project",
+      });
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      const running = store.session(id);
+      expect(running.session.blocks[0]).toMatchObject({
+        id: "first-turn",
+        startedAt: expect.any(Number),
+        turnModel: { harness, id: `${harness}:test` },
+      });
+      turns[0].input.onEvent({ type: "message.delta", text: "Found it" });
+      turns[0].finish();
+      await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+
+      const reconnected = store.sync(id);
+      expect(reconnected.kind).toBe("snapshot");
+      if (reconnected.kind !== "snapshot") return;
+      expect(reconnected.value.session.blocks[0]).toMatchObject({
+        id: "first-turn",
+        startedAt: expect.any(Number),
+        durationMs: expect.any(Number),
+        turnModel: { harness, id: `${harness}:test` },
+      });
+      expect(
+        reconnected.value.session.blocks[0].durationMs,
+      ).toBeGreaterThanOrEqual(0);
+      expect(reconnected.value.session.blocks[1].text).toBe("Found it");
+
+      const delta = store.sync(id, running.revision);
+      expect(delta.kind).toBe("delta");
+      if (delta.kind === "delta")
+        expect(
+          delta.blocks.some(
+            (block) => block.id === "first-turn" && block.durationMs != null,
+          ),
+        ).toBe(true);
+    },
+  );
+
   it("serializes concurrent sends and accepts only one approval decision for a run", async () => {
     const { engine, store, turns, provider, id } = setup();
     engine.command({
@@ -326,6 +370,14 @@ describe("headless session ownership", () => {
             ...value.session,
             busy: true,
             providerSessionId: "retained",
+            blocks: [
+              {
+                id: "interrupted-turn",
+                role: "user",
+                text: "Work",
+                startedAt: value.updatedAt - 2_000,
+              },
+            ],
           },
         },
         { type: "accepted" },
@@ -334,6 +386,7 @@ describe("headless session ownership", () => {
     const recovered = new HostEngine(store, { codex: provider });
     expect(store.session(id).status).toBe("interrupted");
     expect(store.session(id).session.busy).toBe(false);
+    expect(store.session(id).session.blocks[0].durationMs).toBe(2_000);
     expect(provider.send).not.toHaveBeenCalled();
     expect(provider.bind).toHaveBeenCalledWith(
       id,
@@ -455,7 +508,11 @@ describe("headless session ownership", () => {
     await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
     const settled = store.sync(id, streamed);
     if (settled.kind !== "delta") throw new Error("Expected a delta");
-    expect(settled.blocks.some((block) => block.role === "user")).toBe(false);
+    expect(
+      settled.blocks.some(
+        (block) => block.role === "user" && block.durationMs != null,
+      ),
+    ).toBe(true);
     expect(store.sync(id, store.session(id).revision).kind).toBe("unchanged");
     expect(store.sync(id).kind).toBe("snapshot");
     expect(store.summaries(project.id)[0]).toMatchObject({

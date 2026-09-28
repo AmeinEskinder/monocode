@@ -1336,9 +1336,7 @@ function TurnDuration({
   );
   const timeDetails =
     completedAt != null ? (
-      <span
-        className={`${hasBtw ? "ml-1.5" : "ml-auto"} flex shrink-0 items-center gap-2.5`}
-      >
+      <span className="ml-1.5 flex shrink-0 items-center gap-2.5">
         {dot}
         <span className="shrink-0 text-content/35">
           {formatClockTime(completedAt)}
@@ -1354,7 +1352,7 @@ function TurnDuration({
         className={
           hasBtw
             ? "flex w-full min-w-0 items-center gap-1"
-            : "flex shrink-0 items-center gap-1"
+            : "flex min-w-0 items-center gap-1"
         }
       >
         {output ? (
@@ -1401,11 +1399,13 @@ function TurnDuration({
             {timeDetails}
           </BtwPopover>
         ) : (
-          metricsBadge
+          <>
+            {metricsBadge}
+            {labelDetails}
+            {timeDetails}
+          </>
         )}
       </span>
-      {hasBtw ? null : labelDetails}
-      {hasBtw ? null : timeDetails}
     </div>
   );
 }

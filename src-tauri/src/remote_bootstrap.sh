@@ -4,8 +4,12 @@ BASE="$HOME/.monocode-host"
 ENTRY="$BASE/bin/monocode-host"
 VERSION=@@VERSION@@
 RELEASE=@@RELEASE@@
+EXISTED=0
+[ -x "$ENTRY" ] && EXISTED=1
+FORCE_UPGRADE=${MONOCODE_HOST_FORCE_UPGRADE:-0}
+HOST_PORT=${MONOCODE_HOST_PORT:-3774}
 
-if [ ! -x "$ENTRY" ]; then
+if [ ! -x "$ENTRY" ] || [ "$FORCE_UPGRADE" = 1 ]; then
   case "$(uname -s)" in Darwin) OS=darwin ;; Linux) OS=linux ;; *) echo 'MonoCode Host supports Linux and macOS.' >&2; exit 1 ;; esac
   case "$(uname -m)" in arm64|aarch64) ARCH=arm64 ;; x86_64|amd64) ARCH=x64 ;; *) echo 'Unsupported host architecture.' >&2; exit 1 ;; esac
   FILE="monocode-host-$OS-$ARCH.tar.gz"
@@ -58,5 +62,8 @@ SH
   mv "$TMP/launcher" "$ENTRY"
 fi
 
-"$ENTRY" service install >/dev/null
+if [ "$EXISTED" = 1 ] && [ "$FORCE_UPGRADE" = 1 ]; then
+  "$ENTRY" service uninstall >/dev/null
+fi
+"$ENTRY" service install --port "$HOST_PORT" >/dev/null
 "$ENTRY" connection-info

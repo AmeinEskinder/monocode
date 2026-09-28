@@ -6,8 +6,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { HostEngine } from "./engine";
 import { HostStore } from "./store";
@@ -94,6 +96,7 @@ async function setup() {
   });
   return {
     directory,
+    engine,
     store,
     project,
     call,
@@ -106,6 +109,92 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("lists, creates, and selects registered remote worktrees through RPC", async () => {
+    const s = await setup();
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: s.project.cwd });
+    git("init", "-q");
+    git("checkout", "-q", "-b", "main");
+    writeFileSync(join(s.project.cwd, ".gitignore"), "host.db*\n");
+    writeFileSync(join(s.project.cwd, "file.txt"), "initial\n");
+    git("add", ".gitignore", "file.txt");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-q",
+      "-m",
+      "initial",
+    );
+
+    const branch = await s.call("git.createBranch", {
+      projectId: s.project.id,
+      branch: "feature",
+    });
+    expect(branch.value.result.current).toBe("feature");
+    expect(
+      (await s.call("git.switch", { projectId: s.project.id, branch: "main" }))
+        .value.result.current,
+    ).toBe("main");
+    const created = await s.call("git.worktreeCreate", {
+      projectId: s.project.id,
+      branch: "feature",
+      base: "HEAD",
+      existing: true,
+    });
+    expect(created.status).toBe(200);
+    const tree = created.value.result;
+    cleanups.push(async () =>
+      rmSync(join(s.project.cwd, "..", `${s.project.name}-worktrees`), {
+        recursive: true,
+        force: true,
+      }),
+    );
+    expect(tree.branch).toBe("feature");
+    expect(
+      (await s.call("git.worktrees", { projectId: s.project.id })).value.result
+        .worktrees,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: tree.path, branch: "feature" }),
+      ]),
+    );
+
+    const opened = await s.call("commands.dispatch", {
+      type: "create",
+      commandId: "in-worktree",
+      projectId: s.project.id,
+      worktreeCwd: tree.path,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    expect(opened.status).toBe(200);
+    expect(s.store.session(opened.value.result.sessionId).session.cwd).toBe(
+      tree.path,
+    );
+    expect(
+      (
+        await s.call("commands.dispatch", {
+          type: "create",
+          commandId: "outside-worktree",
+          projectId: s.project.id,
+          worktreeCwd: tmpdir(),
+          harness: "codex",
+          model: "codex:test",
+          runtimeMode: "supervised",
+        })
+      ).value.error,
+    ).toContain("available worktree");
+
+    writeFileSync(join(tree.path, "file.txt"), "changed\n");
+    expect(
+      (await s.call("git.diff", { projectId: s.project.id, cwd: tree.path }))
+        .value.result,
+    ).toContain("changed");
+  });
   it("retries model discovery after a provider becomes available", async () => {
     const s = await setup();
     modelProbe.mockRejectedValueOnce(new Error("Login required"));
@@ -225,9 +314,26 @@ describe("remote host API", () => {
     expect(
       await s.call("files.read", {
         projectId: s.project.id,
+        cwd: s.project.cwd,
         path: "hello.txt",
       }),
     ).toEqual({ status: 200, value: { result: "from host" } });
+    expect(
+      await s.call("files.write", {
+        projectId: s.project.id,
+        path: "hello.txt",
+        expected: "from host",
+        content: "edited",
+      }),
+    ).toEqual({ status: 200, value: { result: null } });
+    expect(
+      (
+        await s.call("files.read", {
+          projectId: s.project.id,
+          path: "hello.txt",
+        })
+      ).value.result,
+    ).toBe("edited");
     symlinkSync(
       tmpdir(),
       join(s.directory, "outside"),
@@ -251,5 +357,120 @@ describe("remote host API", () => {
       (await s.call("files.read", { projectId: s.project.id, path: ".." }))
         .value.error,
     ).toContain("outside");
+  });
+
+  it("browses and commits changes in the host checkout", async () => {
+    const s = await setup();
+    const checkout = join(s.directory, "checkout");
+    mkdirSync(checkout);
+    const project = await s.engine.openProject(checkout);
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: checkout });
+    git("init", "-q");
+    git("config", "user.name", "Host Test");
+    git("config", "user.email", "host@example.test");
+    mkdirSync(join(checkout, "src"));
+    writeFileSync(join(checkout, "src", "app.ts"), "before\n");
+    git("add", "--", ".");
+    git("commit", "-qm", "initial");
+    writeFileSync(join(checkout, "src", "app.ts"), "after\n");
+    writeFileSync(join(checkout, "new.ts"), "new\n");
+
+    const root = await s.call("files.list", {
+      projectId: project.id,
+      path: "",
+    });
+    expect(root.status).toBe(200);
+    expect(root.value.result).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "src", isDir: true }),
+        expect.objectContaining({ name: "new.ts", isDir: false }),
+      ]),
+    );
+    expect(
+      (
+        await s.call("files.search", {
+          projectId: project.id,
+          query: "app",
+        })
+      ).value.result,
+    ).toEqual([expect.objectContaining({ path: "src/app.ts" })]);
+    expect(
+      (await s.call("files.list", { projectId: project.id, path: "src" })).value
+        .result[0].name,
+    ).toBe("app.ts");
+    expect(
+      (await s.call("files.list", { projectId: project.id, path: ".." })).value
+        .error,
+    ).toContain("outside");
+    expect(
+      (
+        await s.call("files.list", {
+          projectId: project.id,
+          cwd: s.directory,
+          path: "",
+        })
+      ).value.error,
+    ).toContain("worktree");
+
+    const index = await s.call("git.index", { projectId: project.id });
+    expect(index.value.result.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relative: "src/app.ts",
+          status: "modified",
+          unstaged: true,
+        }),
+        expect.objectContaining({
+          relative: "new.ts",
+          status: "untracked",
+          unstaged: true,
+        }),
+      ]),
+    );
+    const diff = await s.call("git.fileDiff", {
+      projectId: project.id,
+      path: "src/app.ts",
+      staged: false,
+    });
+    expect(diff.value.result).toMatchObject({
+      original: "before\n",
+      current: "after\n",
+    });
+    expect(
+      (
+        await s.call("git.action", {
+          projectId: project.id,
+          action: "stage",
+          path: "../escape",
+        })
+      ).value.error,
+    ).toContain("outside");
+    expect(
+      (
+        await s.call("git.action", {
+          projectId: project.id,
+          action: "stageAll",
+        })
+      ).status,
+    ).toBe(200);
+    const staged = await s.call("git.index", { projectId: project.id });
+    expect(
+      staged.value.result.files.every(
+        (file: { staged: boolean }) => file.staged,
+      ),
+    ).toBe(true);
+    expect(
+      (
+        await s.call("git.action", {
+          projectId: project.id,
+          action: "commit",
+          message: "remote commit",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await s.call("git.index", { projectId: project.id })).value.result.files,
+    ).toEqual([]);
   });
 });

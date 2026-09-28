@@ -6,8 +6,6 @@ import {
 import { hostname, homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { realpath, readFile } from "node:fs/promises";
-import { relative, resolve, isAbsolute } from "node:path";
 import {
   HOST_PROTOCOL_VERSION,
   type HostModelCatalog,
@@ -16,12 +14,31 @@ import {
 import { HostEngine } from "./engine";
 import { SyncTransfers } from "./sync-transfer";
 import { browseHostDirectories } from "./browse";
-import { hostBranches, switchHostBranch } from "./git-branches";
+import {
+  createHostBranch,
+  hostBranches,
+  switchHostBranch,
+} from "./git-branches";
+import {
+  createHostWorktree,
+  hostWorktrees,
+  resolveHostWorktreeAsync,
+} from "./git-worktrees";
+import {
+  hostFileDiff,
+  hostGitAction,
+  hostGitIndex,
+  listHostFiles,
+  readHostFile,
+  searchHostFiles,
+  writeHostFile,
+} from "./workspace";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 
 const exec = promisify(execFile);
-const MAX_BODY = 512 * 1024;
+// Editing a 1 MiB text file sends both its original and replacement contents.
+const MAX_BODY = 4 * 1024 * 1024;
 
 async function body(
   request: IncomingMessage,
@@ -157,7 +174,16 @@ export function createHostServer(
                 "diff",
                 "git.branches",
                 "git.switch",
+                "git.createBranch",
+                "git.worktrees",
+                "git.worktreeCreate",
                 "files.read",
+                "files.list",
+                "files.search",
+                "files.write",
+                "git.index",
+                "git.fileDiff",
+                "git.action",
               ],
             };
             break;
@@ -236,7 +262,11 @@ export function createHostServer(
                 "HEAD",
                 "--",
               ],
-              { cwd: project.cwd, timeout: 10_000, maxBuffer: 2 * 1024 * 1024 },
+              {
+                cwd: await resolveHostWorktreeAsync(project.cwd, params.cwd),
+                timeout: 10_000,
+                maxBuffer: 2 * 1024 * 1024,
+              },
             );
             result = diff.stdout;
             break;
@@ -245,15 +275,51 @@ export function createHostServer(
             const project = engine.store.project(
               String(params.projectId ?? ""),
             );
-            result = await hostBranches(project.cwd);
+            result = await hostBranches(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+            );
             break;
           }
           case "git.switch": {
             const project = engine.store.project(
               String(params.projectId ?? ""),
             );
+            const cwd = await resolveHostWorktreeAsync(project.cwd, params.cwd);
             result = await engine.withIdleProject(project.id, () =>
-              switchHostBranch(project.cwd, params.branch),
+              switchHostBranch(cwd, params.branch, params.remote),
+            );
+            break;
+          }
+          case "git.createBranch": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            const cwd = await resolveHostWorktreeAsync(project.cwd, params.cwd);
+            result = await engine.withIdleProject(project.id, () =>
+              createHostBranch(cwd, params.branch),
+            );
+            break;
+          }
+          case "git.worktrees": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await hostWorktrees(project.cwd);
+            break;
+          }
+          case "git.worktreeCreate": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            const cwd = await resolveHostWorktreeAsync(project.cwd, params.cwd);
+            result = await engine.withIdleProject(project.id, () =>
+              createHostWorktree(
+                project.cwd,
+                params.branch,
+                params.base,
+                params.existing,
+                cwd,
+              ),
             );
             break;
           }
@@ -261,21 +327,74 @@ export function createHostServer(
             const project = engine.store.project(
               String(params.projectId ?? ""),
             );
-            const path = await realpath(
-              resolve(project.cwd, String(params.path ?? "")),
+            result = await readHostFile(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params.path,
             );
-            const rel = relative(project.cwd, path);
-            if (
-              !rel ||
-              rel.split(/[\\/]/).includes("..") ||
-              isAbsolute(rel) ||
-              rel.split(/[\\/]/).some((part) => part.toLowerCase() === ".git")
-            )
-              throw new Error("File is outside the workspace");
-            const { stat } = await import("node:fs/promises");
-            if ((await stat(path)).size > 1024 * 1024)
-              throw new Error("File is too large to preview");
-            result = await readFile(path, "utf8");
+            break;
+          }
+          case "files.list": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await listHostFiles(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params.path,
+            );
+            break;
+          }
+          case "files.search": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await searchHostFiles(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params.query,
+            );
+            break;
+          }
+          case "files.write": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result =
+              (await writeHostFile(
+                await resolveHostWorktreeAsync(project.cwd, params.cwd),
+                params.path,
+                params.expected,
+                params.content,
+              )) ?? null;
+            break;
+          }
+          case "git.index": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await hostGitIndex(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+            );
+            break;
+          }
+          case "git.fileDiff": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await hostFileDiff(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params.path,
+              params.staged === true,
+            );
+            break;
+          }
+          case "git.action": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            const cwd = await resolveHostWorktreeAsync(project.cwd, params.cwd);
+            result =
+              (await engine.withIdleProject(project.id, () =>
+                hostGitAction(cwd, params.action, params.path, params.message),
+              )) ?? null;
             break;
           }
           default:

@@ -20,14 +20,16 @@ import {
 } from "../../sessions/ui/modelSource";
 import { GitPickerTrigger } from "../../source-control/ui/GitPickerTrigger";
 import { Popover } from "../../../shared/ui/Popover";
-import { Check, Globe, X } from "../../../shared/ui/icons";
+import { Check, Globe, Plus, Search, X } from "../../../shared/ui/icons";
 import {
   clearPendingRemoteCommand,
   loadRemoteSession,
   OPEN_CONNECTIONS_EVENT,
   pendingRemoteCommand,
+  rememberRemotePendingWorktree,
   rememberRemoteSession,
   remoteRequest,
+  remotePendingWorktree,
   remoteSessionFor,
   savePendingRemoteCommand,
   useRemoteMachines,
@@ -48,9 +50,11 @@ import {
   type HostDescriptor,
   type HostModelCatalog,
   type HostSession,
+  type HostWorktree,
   type RemoteMachine,
   type RemoteProvider,
 } from "../model/protocol";
+import { RemoteWorktreePicker } from "./RemoteWorktreePicker";
 
 export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteHost: ReactNode;
@@ -64,6 +68,13 @@ type Configuration = {
   mode: RuntimeMode;
 };
 
+type OptimisticTurn = {
+  commandId: string;
+  text: string;
+  startedAt: number;
+  turnModel: NonNullable<Block["turnModel"]>;
+};
+
 const noop = () => {};
 
 /** A tab in a project on another machine. The host owns the session; this
@@ -71,11 +82,13 @@ const noop = () => {};
 export function RemoteSession({
   shell,
   visible,
+  onOpenWorktree,
   render,
 }: {
   /** The tab's local session, which provides its ID and new-session defaults. */
   shell: Session;
   visible: boolean;
+  onOpenWorktree?: SessionPaneProps["onOpenRemoteWorktree"];
   render: (overrides: RemoteSessionOverrides) => ReactNode;
 }) {
   const project = remoteProjectFor(shell.cwd);
@@ -111,6 +124,7 @@ export function RemoteSession({
       key={`${machine.id}:${shell.id}`}
       shell={shell}
       visible={visible}
+      onOpenWorktree={onOpenWorktree}
       machine={machine}
       project={project}
       render={render}
@@ -121,12 +135,14 @@ export function RemoteSession({
 function ConnectedRemoteSession({
   shell,
   visible,
+  onOpenWorktree,
   machine,
   project,
   render,
 }: {
   shell: Session;
   visible: boolean;
+  onOpenWorktree?: SessionPaneProps["onOpenRemoteWorktree"];
   machine: RemoteMachine;
   project: RemoteProject;
   render: (overrides: RemoteSessionOverrides) => ReactNode;
@@ -144,15 +160,20 @@ function ConnectedRemoteSession({
   const [catalogError, setCatalogError] = useState("");
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [branches, setBranches] = useState<HostBranches>();
+  const [selectedCwd, setSelectedCwd] = useState(
+    () => remotePendingWorktree(shell.id) ?? project.cwd,
+  );
   const [switchingBranch, setSwitchingBranch] = useState(false);
   const [preview, setPreview] = useState<{ title: string; text: string }>();
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
+  const [unseenSend, setUnseenSend] = useState<
+    OptimisticTurn & { sessionId: string }
+  >();
   // A first message waits here while its session is created on the host.
-  const [starting, setStarting] = useState<{
-    text: string;
-    failed?: boolean;
-  }>();
+  const [starting, setStarting] = useState<
+    OptimisticTurn & { failed?: boolean }
+  >();
   const [pending, setPending] = useState(() =>
     pendingRemoteCommand(project.key, machine.environmentId, sessionId ?? null),
   );
@@ -185,7 +206,35 @@ function ConnectedRemoteSession({
     snapshot && snapshot.session.id === sessionId
       ? snapshot.session
       : undefined;
-  const busy = !!hostSession?.busy || (!!starting && !starting.failed);
+  useEffect(() => {
+    if (hostSession) rememberRemotePendingWorktree(shell.id);
+  }, [hostSession?.id, shell.id]);
+  const executionCwd = hostSession?.cwd ?? selectedCwd;
+  const activeSessionId = hostSession?.id ?? sessionId;
+  const hasHostBlock = (commandId: string) =>
+    !!hostSession?.blocks.some((block) => block.id === commandId);
+  const unseenActive =
+    !!unseenSend &&
+    unseenSend.sessionId === activeSessionId &&
+    !hasHostBlock(unseenSend.commandId);
+  const startingActive =
+    !!starting && !starting.failed && !hasHostBlock(starting.commandId);
+  const pendingSendActive =
+    (pending?.type === "send" || pending?.type === "compact") &&
+    pending.sessionId === activeSessionId &&
+    !hasHostBlock(pending.commandId);
+  const busy =
+    !!hostSession?.busy || unseenActive || startingActive || pendingSendActive;
+  useEffect(() => {
+    if (
+      unseenSend &&
+      hostSession?.id === unseenSend.sessionId &&
+      hostSession.blocks.some((block) => block.id === unseenSend.commandId)
+    )
+      setUnseenSend((current) =>
+        current?.commandId === unseenSend.commandId ? undefined : current,
+      );
+  }, [hostSession, unseenSend]);
 
   useEffect(() => {
     let disposed = false;
@@ -289,6 +338,7 @@ function ConnectedRemoteSession({
   const loadBranches = useCallback(() => {
     void remoteRequest<HostBranches>(machine.id, "git.branches", {
       projectId: project.projectId,
+      cwd: executionCwd,
     })
       .then((value) => {
         if (alive.current) setBranches(value);
@@ -296,7 +346,7 @@ function ConnectedRemoteSession({
       .catch(() => {
         if (alive.current) setBranches(undefined);
       });
-  }, [machine.id, project.projectId]);
+  }, [machine.id, project.projectId, executionCwd]);
   useEffect(() => {
     if (online) loadBranches();
   }, [online, loadBranches]);
@@ -341,13 +391,42 @@ function ConnectedRemoteSession({
     else setDraft(update);
   };
 
+  const selectedTurnModel = (): NonNullable<Block["turnModel"]> => ({
+    harness: configuration.harness,
+    id: configuration.model,
+    name:
+      findRemoteModel(
+        catalog?.models[configuration.harness] ?? [],
+        configuration.model,
+      )?.name ?? configuration.model.replace(/^[^:]+:/, ""),
+  });
+  const optimisticTurn = (text: string): OptimisticTurn => ({
+    commandId: crypto.randomUUID(),
+    text,
+    startedAt: Date.now(),
+    turnModel: selectedTurnModel(),
+  });
+
   const run = async (
     command: HostCommand,
+    optimistic?: OptimisticTurn,
   ): Promise<CommandReceipt | undefined> => {
     if (sendingRef.current) return undefined;
     sendingRef.current = true;
     setSending(true);
     setError("");
+    if (command.type === "send" || command.type === "compact")
+      setUnseenSend((current) =>
+        current?.commandId === command.commandId
+          ? current
+          : {
+              sessionId: command.sessionId,
+              commandId: command.commandId,
+              text: command.type === "send" ? command.text : "/compact",
+              startedAt: optimistic?.startedAt ?? Date.now(),
+              turnModel: optimistic?.turnModel ?? selectedTurnModel(),
+            },
+      );
     // Keep the original ID across disconnects and app restarts. An ambiguous
     // response is retried explicitly instead of silently sending a new prompt.
     try {
@@ -377,6 +456,10 @@ function ConnectedRemoteSession({
       if (!alive.current) return undefined;
       const message = String(reason);
       if (message.includes("Host rejected request:")) {
+        if (command.type === "send" || command.type === "compact")
+          setUnseenSend((current) =>
+            current?.commandId === command.commandId ? undefined : current,
+          );
         clearPendingRemoteCommand(
           project.key,
           machine.environmentId,
@@ -439,36 +522,48 @@ function ConnectedRemoteSession({
       });
   });
 
-  const startSession = async (text: string) => {
+  const startSession = async (turn: OptimisticTurn) => {
     const receipt = await run({
       type: "create",
       commandId: crypto.randomUUID(),
       projectId: project.projectId,
+      ...(selectedCwd !== project.cwd ? { worktreeCwd: selectedCwd } : {}),
       harness: draft.harness,
       model: draft.model,
       modelSettings: draft.settings,
       runtimeMode: draft.mode,
     });
     if (!receipt) {
-      if (alive.current) setStarting({ text, failed: true });
+      if (alive.current) setStarting({ ...turn, failed: true });
       return;
     }
-    if (alive.current) openSession(receipt.sessionId);
-    const sent = await run(message(receipt.sessionId, text));
-    if (alive.current) setStarting(sent ? undefined : { text, failed: true });
+    if (alive.current) {
+      openSession(receipt.sessionId);
+    }
+    const sent = await run(
+      message(receipt.sessionId, turn.text, turn.commandId),
+      turn,
+    );
+    if (alive.current)
+      setStarting(sent ? undefined : { ...turn, failed: true });
   };
 
-  const message = (id: string, text: string): HostCommand =>
+  const message = (
+    id: string,
+    text: string,
+    commandId: string = crypto.randomUUID(),
+  ): HostCommand =>
     text.trim().toLowerCase() === "/compact"
-      ? { type: "compact", commandId: crypto.randomUUID(), sessionId: id }
-      : { type: "send", commandId: crypto.randomUUID(), sessionId: id, text };
+      ? { type: "compact", commandId, sessionId: id }
+      : { type: "send", commandId, sessionId: id, text };
 
   const submit = (text: string): boolean => {
     if (!online || sending || pending || busy || !text.trim()) return false;
     if (!hostSession) {
       if (sessionId || !draft.model) return false;
-      setStarting({ text });
-      void startSession(text);
+      const turn = optimisticTurn(text);
+      setStarting(turn);
+      void startSession(turn);
       return true;
     }
     if (changes) return false;
@@ -480,6 +575,7 @@ function ConnectedRemoteSession({
     try {
       const text = await remoteRequest<string>(machine.id, method, {
         projectId: project.projectId,
+        cwd: executionCwd,
         path,
       });
       if (alive.current)
@@ -548,29 +644,43 @@ function ConnectedRemoteSession({
 
   // Show a message the host has not confirmed yet in the transcript.
   const blocks: Block[] = hostSession?.blocks ?? [];
-  const unconfirmed =
-    pending?.type === "send" &&
-    pending.sessionId === hostSession?.id &&
-    !blocks.some((block) => block.id === pending.commandId)
-      ? pending.text
-      : !hostSession && starting
-        ? starting.text
-        : undefined;
+  const unconfirmed: Block | undefined =
+    unseenActive && unseenSend
+      ? {
+          id: unseenSend.commandId,
+          role: "user",
+          text: unseenSend.text,
+          startedAt: unseenSend.startedAt,
+          turnModel: unseenSend.turnModel,
+        }
+      : pendingSendActive && pending
+        ? {
+            id: pending.commandId,
+            role: "user",
+            text: pending.type === "send" ? pending.text : "/compact",
+          }
+        : startingActive && starting
+          ? {
+              id: starting.commandId,
+              role: "user",
+              text: starting.text,
+              startedAt: starting.startedAt,
+              turnModel: starting.turnModel,
+            }
+          : undefined;
   const session: Session = {
     ...(hostSession ?? {
       title: shell.title,
       blocks: [],
     }),
     id: shell.id,
-    cwd: project.cwd,
+    cwd: executionCwd,
     harness: configuration.harness,
     model: configuration.model,
     modelSettings: configuration.settings,
     runtimeMode: configuration.mode,
     busy,
-    blocks: unconfirmed
-      ? [...blocks, { id: "unconfirmed", role: "user", text: unconfirmed }]
-      : blocks,
+    blocks: unconfirmed ? [...blocks, unconfirmed] : blocks,
   };
 
   const catalogProblem = catalog?.errors[configuration.harness] ?? catalogError;
@@ -583,13 +693,14 @@ function ConnectedRemoteSession({
           action: {
             label: "Try again",
             run: () => {
-              const text = starting.text;
-              setStarting({ text });
+              const turn = optimisticTurn(starting.text);
+              setStarting(turn);
               void (sessionId
-                ? run(message(sessionId, text)).then((sent) =>
-                    setStarting(sent ? undefined : { text, failed: true }),
+                ? run(message(sessionId, turn.text, turn.commandId), turn).then(
+                    (sent) =>
+                      setStarting(sent ? undefined : { ...turn, failed: true }),
                   )
-                : startSession(text));
+                : startSession(turn));
             },
           },
         }
@@ -622,16 +733,36 @@ function ConnectedRemoteSession({
     <RemoteHostBar
       machine={machine}
       project={project}
+      cwd={executionCwd}
       online={online}
       branches={branches}
       switching={switchingBranch}
-      busy={busy}
-      onSwitch={(branch) => {
+      busy={busy || (!!sessionId && !hostSession)}
+      onSelectWorktree={async (tree) => {
+        if (tree.path === executionCwd) return;
+        if (!hostSession) {
+          rememberRemotePendingWorktree(shell.id, tree.path);
+          setSelectedCwd(tree.path);
+          setBranches(undefined);
+          return;
+        }
+        if (!onOpenWorktree)
+          throw new Error("Cannot open another remote session here");
+        onOpenWorktree(shell.cwd, tree.path, {
+          harness: configuration.harness,
+          model: configuration.model,
+          modelSettings: configuration.settings,
+          runtimeMode: configuration.mode,
+        });
+      }}
+      onBranchAction={(method, branch, remote) => {
         setSwitchingBranch(true);
         setError("");
-        void remoteRequest<HostBranches>(machine.id, "git.switch", {
+        void remoteRequest<HostBranches>(machine.id, method, {
           projectId: project.projectId,
+          cwd: executionCwd,
           branch,
+          remote,
         })
           .then((value) => {
             if (alive.current) setBranches(value);
@@ -800,26 +931,51 @@ function ConnectedRemoteSession({
 function RemoteHostBar({
   machine,
   project,
+  cwd,
   online,
   branches,
   switching,
   busy,
-  onSwitch,
+  onSelectWorktree,
+  onBranchAction,
   onViewChanges,
 }: {
   machine: RemoteMachine;
   project: RemoteProject;
+  cwd: string;
   online: boolean;
   branches?: HostBranches;
   switching: boolean;
   busy: boolean;
-  onSwitch: (branch: string) => void;
+  onSelectWorktree: (tree: HostWorktree) => Promise<void>;
+  onBranchAction: (
+    method: "git.switch" | "git.createBranch",
+    branch: string,
+    remote?: string,
+  ) => void;
   onViewChanges: () => void;
 }) {
   const anchor = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
   const canSwitch =
-    online && !busy && !switching && !!branches?.branches.length;
+    online &&
+    !busy &&
+    !switching &&
+    !!(branches?.branches.length || branches?.remotes?.length);
+  const filtered = [
+    ...(branches?.branches.map((name) => ({
+      name,
+      remote: null as string | null,
+    })) ?? []),
+    ...(branches?.remotes ?? []),
+  ].filter((branch) =>
+    `${branch.remote ? `${branch.remote}/` : ""}${branch.name}`
+      .toLowerCase()
+      .includes(query.toLowerCase()),
+  );
   return (
     <>
       <span
@@ -838,7 +994,16 @@ function RemoteHostBar({
         <span className="truncate font-mono text-[12px]">{machine.name}</span>
         <span className="sr-only">{online ? "Connected" : "Reconnecting"}</span>
       </span>
-      {branches?.current ? (
+      <RemoteWorktreePicker
+        machine={machine}
+        project={project}
+        cwd={cwd}
+        branches={branches}
+        online={online}
+        busy={busy}
+        onSelect={onSelectWorktree}
+      />
+      {branches ? (
         <div ref={anchor} className="relative flex min-w-0 shrink">
           <GitPickerTrigger
             title={
@@ -846,13 +1011,17 @@ function RemoteHostBar({
                 ? "Wait for the turn to finish to switch branches"
                 : "Switch the host checkout’s branch"
             }
-            aria-label={`Host branch ${branches.current}`}
+            aria-label={`Host branch ${branches.current ?? "Detached"}`}
             aria-expanded={open}
-            aria-haspopup="menu"
+            aria-haspopup="dialog"
             disabled={!canSwitch}
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => setOpen((value) => !value)}
-            label={switching ? "Switching…" : branches.current}
+            onClick={() => {
+              setOpen((value) => !value);
+              setCreating(false);
+              setQuery("");
+            }}
+            label={switching ? "Switching…" : (branches.current ?? "Detached")}
           />
           {open ? (
             <Popover
@@ -863,28 +1032,108 @@ function RemoteHostBar({
               maxHeight={280}
               constrainHeight
               onDismiss={() => setOpen(false)}
-              role="menu"
+              role="dialog"
               aria-label="Host branches"
-              className="overflow-y-auto p-1"
+              className="flex flex-col overflow-hidden"
             >
-              {branches.branches.map((branch) => (
-                <button
-                  key={branch}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={branch === branches.current}
-                  className="flex h-7.5 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
-                  onClick={() => {
+              {creating ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!name.trim()) return;
                     setOpen(false);
-                    if (branch !== branches.current) onSwitch(branch);
+                    onBranchAction("git.createBranch", name.trim());
                   }}
+                  className="flex flex-col gap-2 p-3 text-[12px]"
                 >
-                  <span className="min-w-0 flex-1 truncate">{branch}</span>
-                  {branch === branches.current ? (
-                    <Check className="size-3.5 shrink-0 text-content/55" />
-                  ) : null}
-                </button>
-              ))}
+                  <label htmlFor="remote-new-branch">New branch name</label>
+                  <input
+                    id="remote-new-branch"
+                    aria-label="New remote branch"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="feature/my-task"
+                    className="rounded-md border border-content/10 bg-background-base p-2 outline-none"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCreating(false)}
+                      className="rounded-md px-2 py-1 hover:bg-content/8"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!name.trim()}
+                      className="rounded-md bg-content px-2 py-1 text-background-base disabled:opacity-40"
+                    >
+                      Create branch
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 border-b border-stroke px-3 py-2">
+                    <Search className="size-3.5 text-content/40" />
+                    <input
+                      aria-label="Search host branches"
+                      placeholder="Search branches…"
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
+                    />
+                  </label>
+                  <div className="min-h-0 overflow-y-auto p-1">
+                    {filtered.map((branch) => (
+                      <button
+                        key={`${branch.remote ?? "local"}:${branch.name}`}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={
+                          !branch.remote && branch.name === branches.current
+                        }
+                        className="flex h-7.5 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
+                        onClick={() => {
+                          setOpen(false);
+                          if (branch.remote || branch.name !== branches.current)
+                            onBranchAction(
+                              "git.switch",
+                              branch.name,
+                              branch.remote ?? undefined,
+                            );
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {branch.remote ? `${branch.remote}/` : ""}
+                          {branch.name}
+                        </span>
+                        {!branch.remote && branch.name === branches.current ? (
+                          <Check className="size-3.5 shrink-0 text-content/55" />
+                        ) : null}
+                      </button>
+                    ))}
+                    {!filtered.length ? (
+                      <p className="p-2 text-[12px] text-content/50">
+                        No matching branches
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="border-t border-stroke p-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreating(true);
+                        setName(query);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] hover:bg-content/8"
+                    >
+                      <Plus className="size-3.5" />
+                      Create branch…
+                    </button>
+                  </div>
+                </>
+              )}
             </Popover>
           ) : null}
         </div>

@@ -345,6 +345,7 @@ import {
   lastProjectPath,
   loadRecents,
   isLocalProject,
+  isRemoteProjectPath,
   looksLikeProject,
   normalizeProjectPath,
   projectRailItems,
@@ -527,14 +528,22 @@ import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
 import { SearchView } from "../features/search/ui/SearchView";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
-import { SettingsView, type SettingsAnchor } from "../features/settings/ui/SettingsView";
+import {
+  SettingsView,
+  type SettingsAnchor,
+} from "../features/settings/ui/SettingsView";
 import {
   OPEN_CONNECTIONS_EVENT,
   OPEN_REMOTE_PROJECT_EVENT,
+  rememberRemotePendingWorktree,
   rememberRemoteSession,
   remoteSessionFor,
 } from "../features/connections/model/connections";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
+import {
+  remoteFilePath,
+  type RemoteFileTarget,
+} from "../features/connections/model/remoteFiles";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import { InboxView, LinkedWorkItemPanel } from "../features/inbox/ui/InboxView";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -560,7 +569,10 @@ import {
 import type { LinkedSessionUpdate } from "../features/inbox/model/linkedSessionUpdates";
 import { markLinkedSessionUpdateSeen } from "../features/inbox/model/linkedSessionSeen";
 import { inboxTrackerDescription } from "../features/inbox/model/inboxContext";
-import { gitlabWorkItemDetails, peekGitlabWorkItemDetails } from "../features/inbox/model/gitlab";
+import {
+  gitlabWorkItemDetails,
+  peekGitlabWorkItemDetails,
+} from "../features/inbox/model/gitlab";
 import {
   azureDevOpsWorkItemDetails,
   peekAzureDevOpsWorkItemDetails,
@@ -1420,7 +1432,7 @@ export default function App({
     activeFile?.cwd ?? (active ? sessionWorkCwd(active) : sidebarCwd);
   const gitCwdBranches = useProjectBranches(
     gitCwd,
-    Boolean(gitCwd) && gitCwd !== "~",
+    Boolean(gitCwd) && gitCwd !== "~" && !isRemoteProjectPath(sidebarCwd),
   );
   const explorerRootLabel =
     active?.worktreeCwd && sameProjectPath(gitCwd, sessionWorkCwd(active))
@@ -2174,6 +2186,31 @@ export default function App({
       setActiveTabId(tab.id);
     },
     [activateTab, appendTab, sessionDefaults?.runtimeMode, tabs],
+  );
+
+  const onOpenRemoteWorktree = useCallback(
+    (
+      project: string,
+      path: string,
+      settings: {
+        harness: HarnessId;
+        model: string;
+        modelSettings: Record<string, string>;
+        runtimeMode: RuntimeMode;
+      },
+    ) => {
+      const session = {
+        ...newDefaultSession(project, settings.runtimeMode),
+        ...settings,
+      };
+      const tab = newTab(session.id);
+      rememberRemotePendingWorktree(session.id, path);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, project);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    },
+    [appendTab],
   );
 
   const onStartInboxItem = useCallback(
@@ -5235,7 +5272,7 @@ export default function App({
           editorPanes: tab.editorPanes.map((pane) => ({
             ...pane,
             files: pane.files.map((file) =>
-              isFilesystemTab(file)
+              isFilesystemTab(file) && !file.remoteFile
                 ? { ...file, path: rebasePath(file.path, from, to) }
                 : file,
             ),
@@ -5316,7 +5353,11 @@ export default function App({
     for (const tab of tabsRef.current) {
       for (const pane of tab.editorPanes) {
         for (const file of pane.files) {
-          if (isFilesystemTab(file) && isEqualOrInside(file.path, path)) {
+          if (
+            isFilesystemTab(file) &&
+            !file.remoteFile &&
+            isEqualOrInside(file.path, path)
+          ) {
             dropped.add(file.id);
           }
         }
@@ -5412,6 +5453,62 @@ export default function App({
         }
         setComposerFocused(false);
       })();
+    },
+    [activateTab, insertBesideActive],
+  );
+
+  const onOpenRemoteFile = useCallback(
+    (target: RemoteFileTarget) => {
+      const tab = tabsRef.current.find(
+        (entry) => entry.id === activeTabIdRef.current,
+      );
+      if (!tab) return;
+      const file = {
+        ...newFileTab(
+          remoteFilePath(target),
+          target.cwd,
+          false,
+          undefined,
+          target.projectKey,
+        ),
+        remoteFile: {
+          machineId: target.machineId,
+          projectId: target.projectId,
+          relativePath: target.relativePath,
+        },
+      };
+      if (loadFileTabMode() === "workspace") {
+        const created = newEditorWorkspaceTab({ ...file, preview: true });
+        let opened: { tabId: string; paneId?: string } | undefined;
+        flushSync(() => {
+          setTabs((previous) => {
+            const result = openWorkspaceFile(
+              previous,
+              file,
+              created,
+              (tabs, next) => insertBesideActive(tabs, next, target.projectKey),
+            );
+            opened = result;
+            return result.tabs;
+          });
+        });
+        if (opened?.paneId) activateTab(opened.tabId, opened.paneId);
+        else if (opened) setActiveTabId(opened.tabId);
+        setProjectTerminalFocused(false);
+      } else {
+        setTabs((previous) =>
+          previous.map((entry) => {
+            if (entry.id !== tab.id) return entry;
+            const focusedSession = sessionsRef.current.find(
+              (session) => session.id === entry.focusedId,
+            );
+            return openEditorTab(entry, file, {
+              split: focusedSession?.blocks.length === 0 ? "left" : "right",
+            });
+          }),
+        );
+      }
+      setComposerFocused(false);
     },
     [activateTab, insertBesideActive],
   );
@@ -5839,9 +5936,7 @@ export default function App({
       const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
       const harnessText =
         options?.ciRepair?.prompt ??
-        (rawCommand
-          ? submittedText
-          : composeNoteMessage(noteCard, promptText));
+        (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch =
         current.pendingSwitch && current.pendingSwitch.from !== current.harness
@@ -6070,19 +6165,20 @@ export default function App({
       const card =
         options?.secondOpinion ??
         (handoffCard ? handoffTurnCard(handoffCard) : undefined);
-      const visibleText =
-        operatorCommand.matched
-          ? promptText
-          : card?.kind === "handoff"
-            ? submittedText
-            : card
-              ? SECOND_OPINION_TITLE
-              : submittedText;
+      const visibleText = operatorCommand.matched
+        ? promptText
+        : card?.kind === "handoff"
+          ? submittedText
+          : card
+            ? SECOND_OPINION_TITLE
+            : submittedText;
       const cards = {
         ...(rawCommand ? undefined : userTurnCards(noteCard, card)),
         ...(ciContext ? { ciContext } : {}),
         ...(operatorCommand.matched ? { monocode: true } : {}),
-        ...(options?.appRequestId ? { appRequestId: options.appRequestId } : {}),
+        ...(options?.appRequestId
+          ? { appRequestId: options.appRequestId }
+          : {}),
         // The orchestrator writes these turns, not the user; hide them.
         ...(options?.managed ? { internal: true } : {}),
       };
@@ -6102,7 +6198,9 @@ export default function App({
             const draftRemoved = draftBlock
               ? {
                   ...s,
-                  blocks: s.blocks.filter((block) => block.id !== draftBlock.id),
+                  blocks: s.blocks.filter(
+                    (block) => block.id !== draftBlock.id,
+                  ),
                 }
               : s;
             const selected = options?.buildTarget
@@ -6398,11 +6496,7 @@ export default function App({
           }
           if (turnGen.current.get(sessionId) !== gen) return;
           const latest = sessionsRef.current.find((s) => s.id === sessionId);
-          const brief = chooseHandoffBrief(
-            agentText,
-            latest ?? current,
-            text,
-          );
+          const brief = chooseHandoffBrief(agentText, latest ?? current, text);
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
@@ -6533,10 +6627,7 @@ export default function App({
           const earlier = queuedHandoff
             ? userMessagesAfterHandoff(current)
             : [];
-          if (
-            editedResend &&
-            canRewindHarnessLastTurn(current.harness)
-          ) {
+          if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
                 harness: current.harness,
@@ -6994,9 +7085,7 @@ export default function App({
         },
         submit: submitSession,
         saveDraft: (id, prompt, attachments, requestId) =>
-          flushSync(() =>
-            onSaveDraft(id, prompt, attachments, requestId),
-          ),
+          flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
       }),
     [appendTab, submitSession, onSaveDraft],
   );
@@ -8747,7 +8836,9 @@ export default function App({
                   previous.text !== launch.prompt ||
                   (!launch.draft && !!previous.draft)
                 )
-                  throw new Error("Request ID was already used for another session launch");
+                  throw new Error(
+                    "Request ID was already used for another session launch",
+                  );
                 return;
               }
               if (
@@ -9234,6 +9325,14 @@ export default function App({
     setInboxViewOpen(false);
     setNotesViewOpen(false);
     setAutomationsViewOpen(false);
+    if (isRemoteProjectPath(sidebarCwdRef.current)) {
+      setFilePickerOpen(false);
+      setSessionSidebarOpen(true);
+      setSidebarTab("files");
+      setFilesSearchOpen(true);
+      setSearchFocusToken((token) => token + 1);
+      return;
+    }
     setFilePickerInitialQuery("");
     setFilePickerResetToken((token) => token + 1);
     setFilePickerOpen(true);
@@ -9336,11 +9435,7 @@ export default function App({
   );
 
   const onRepairChecks = useCallback(
-    async (
-      item: InboxItem,
-      request: CiRepairRequest,
-      sessionId?: string,
-    ) => {
+    async (item: InboxItem, request: CiRepairRequest, sessionId?: string) => {
       const cwd = item.projectPath;
       if (!cwd) throw new Error("Choose a local project for this PR first.");
       let session = sessionId ? await ensureOpenSession(sessionId) : undefined;
@@ -9462,7 +9557,8 @@ export default function App({
   useEffect(() => {
     const openConnections = () => openSettings("connections");
     window.addEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
-    return () => window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
+    return () =>
+      window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
   }, [openSettings]);
   const [remoteProjectDialogOpen, setRemoteProjectDialogOpen] = useState(false);
   useEffect(() => {
@@ -9556,7 +9652,8 @@ export default function App({
     for (const tab of tabs) {
       for (const pane of tab.editorPanes) {
         for (const file of pane.files) {
-          if (!isFilesystemTab(file) || seen.has(file.path)) continue;
+          if (!isFilesystemTab(file) || file.remoteFile || seen.has(file.path))
+            continue;
           seen.add(file.path);
           paths.push(file.path);
         }
@@ -9612,10 +9709,13 @@ export default function App({
         prefetchAhead();
         if (!session || session.inboxAsk) return;
         if (activeTabIdRef.current !== activeTabId) return;
-        const currentTab = tabsRef.current.find((tab) => tab.id === activeTabId);
+        const currentTab = tabsRef.current.find(
+          (tab) => tab.id === activeTabId,
+        );
         if (currentTab?.focusedId !== focusedId) return;
-        setTabs((prev) =>
-          switchSessionInTab(prev, activeTabId, focusedId, next) ?? prev,
+        setTabs(
+          (prev) =>
+            switchSessionInTab(prev, activeTabId, focusedId, next) ?? prev,
         );
         setComposerFocused(true);
         const linkedUpdate = linkedSessionUpdatesRef.current.get(next);
@@ -9903,8 +10003,7 @@ export default function App({
         else if (shortcut === "App: Command Palette")
           run("open_command_palette", a.onOpenCommandPalette);
         else if (shortcut === "View: Reload") run("reload", a.onReload);
-        else if (shortcut === "App: Search")
-          run("open_search", a.onOpenSearch);
+        else if (shortcut === "App: Search") run("open_search", a.onOpenSearch);
         else if (shortcut === "App: Settings")
           run("open_settings", () => a.openSettings());
         else if (shortcut === "App: Find in Files")
@@ -10059,6 +10158,7 @@ export default function App({
     onCwdChange,
     onBranchChange,
     onWorktreeChange,
+    onOpenRemoteWorktree,
     onWorkspaceModeChange,
     onWorktreeBaseChange,
     onManageWorktrees: () => openSettings("worktrees"),
@@ -10188,6 +10288,7 @@ export default function App({
               onDeleteSession={onDeleteHistorySession}
               onDeleteSessions={onDeleteHistorySessions}
               onOpenFile={onOpenFile}
+              onOpenRemoteFile={onOpenRemoteFile}
               onOpenTerminal={onOpenTerminal}
               onFileMoved={onFileMoved}
               onFileDeleted={onFileDeleted}
@@ -10464,7 +10565,8 @@ export default function App({
                   onToggleSidebar={onToggleSidebar}
                   onOpenFile={onOpenFile}
                   onOpenSession={(sessionId, blockId, query) => {
-                    if (blockId) requestTranscriptJump(sessionId, blockId, query);
+                    if (blockId)
+                      requestTranscriptJump(sessionId, blockId, query);
                     void onSelectHistorySession(sessionId);
                   }}
                   onOpenProject={onSelectProject}
@@ -10850,7 +10952,8 @@ function dropOpenFiles(
   const editorPanes: EditorPane[] = [];
   for (const pane of tab.editorPanes) {
     const files = pane.files.filter(
-      (file) => !isFilesystemTab(file) || !shouldDrop(file.path),
+      (file) =>
+        !isFilesystemTab(file) || !!file.remoteFile || !shouldDrop(file.path),
     );
     if (files.length === 0) {
       const sibling = siblingLeafId(layout, pane.id);

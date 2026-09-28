@@ -263,6 +263,7 @@ export function summary(value: HostSession): HostSessionSummary {
     status: value.status,
     updatedAt: value.updatedAt,
     id: value.session.id,
+    cwd: value.session.cwd,
     title: value.session.title,
     harness: value.session.harness as RemoteProvider,
   };

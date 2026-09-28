@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { hostBranches, switchHostBranch } from "./git-branches";
+import {
+  createHostBranch,
+  hostBranches,
+  switchHostBranch,
+} from "./git-branches";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -32,6 +36,7 @@ it("lists and switches only clean existing local branches", async () => {
   expect(await hostBranches(cwd)).toEqual({
     current: "main",
     branches: ["feature", "main"],
+    remotes: [],
   });
   expect(await switchHostBranch(cwd, "feature")).toMatchObject({
     current: "feature",
@@ -44,4 +49,20 @@ it("lists and switches only clean existing local branches", async () => {
     "Commit or stash",
   );
   expect((await hostBranches(cwd)).current).toBe("feature");
+  await expect(createHostBranch(cwd, "new-feature")).rejects.toThrow(
+    "Commit or stash",
+  );
+  writeFileSync(join(cwd, "file.txt"), "initial");
+  expect(await createHostBranch(cwd, "new-feature")).toMatchObject({
+    current: "new-feature",
+  });
+  git("remote", "add", "origin", cwd);
+  git("update-ref", "refs/remotes/origin/review", "HEAD");
+  expect((await hostBranches(cwd)).remotes).toContainEqual({
+    remote: "origin",
+    name: "review",
+  });
+  expect(await switchHostBranch(cwd, "review", "origin")).toMatchObject({
+    current: "review",
+  });
 });

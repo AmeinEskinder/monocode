@@ -165,6 +165,20 @@ async function openRemove() {
       .click(),
   );
 }
+
+it("offers an explicit host update for an SSH machine missing workspace methods", async () => {
+  machines = [machine];
+  await render();
+  expect(container.textContent).toContain(
+    "host update needed for Explorer and Changes",
+  );
+  expect(container.textContent).toContain("interrupts active agent turns");
+  await act(async () => button("Update Host").click());
+  expect(invoke).toHaveBeenCalledWith("remote_ssh_reconnect", {
+    machineId: machine.id,
+    upgrade: true,
+  });
+});
 const requested = (method: string) =>
   vi
     .mocked(invoke)

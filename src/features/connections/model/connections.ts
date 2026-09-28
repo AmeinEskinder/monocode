@@ -19,6 +19,29 @@ export const OPEN_REMOTE_PROJECT_EVENT = "monocode:open-remote-project";
 export const refreshRemoteMachines = () =>
   window.dispatchEvent(new Event(CHANGE));
 const TAB_KEY = "monocode.remote-tabs.v2";
+const WORKTREE_KEY = "monocode.remote-pending-worktrees.v1";
+
+export function remotePendingWorktree(shellId: string): string | undefined {
+  try {
+    const value = JSON.parse(localStorage.getItem(WORKTREE_KEY) ?? "{}")[
+      shellId
+    ];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function rememberRemotePendingWorktree(shellId: string, path?: string) {
+  try {
+    const all = JSON.parse(localStorage.getItem(WORKTREE_KEY) ?? "{}");
+    if (path) all[shellId] = path;
+    else delete all[shellId];
+    localStorage.setItem(WORKTREE_KEY, JSON.stringify(all));
+  } catch {
+    /* selection is restored from the host once a session exists */
+  }
+}
 
 /** The host session a tab in a remote project shows; none for a new session. */
 export function remoteSessionFor(shellId: string): string | undefined {

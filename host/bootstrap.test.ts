@@ -29,7 +29,7 @@ function fixture(badChecksum = false) {
   mkdirSync(bin);
   writeFileSync(
     join(source, "monocode-host"),
-    `#!/bin/sh\ncase "$1" in\n--version) printf '%s\\n' ${quote(version)} ;;\nservice) printf 'service installed\\n' >> "$MONOCODE_TEST_EVENTS" ;;\nconnection-info) printf '{"port":3774,"pid":123}\\n' ;;\n*) exit 1 ;;\nesac\n`,
+    `#!/bin/sh\ncase "$1" in\n--version) printf '%s\\n' ${quote(version)} ;;\nservice) printf 'service %s\\n' "$2" >> "$MONOCODE_TEST_EVENTS" ;;\nconnection-info) printf '{"port":3774,"pid":123}\\n' ;;\n*) exit 1 ;;\nesac\n`,
     { mode: 0o755 },
   );
   const archive = join(dir, "host.tar.gz");
@@ -49,7 +49,7 @@ function fixture(badChecksum = false) {
     .replace('BASE="$HOME/.monocode-host"', `BASE=${quote(base)}`)
     .replace("@@VERSION@@", quote(version))
     .replace("@@RELEASE@@", "'https://example.invalid/releases'");
-  const run = () =>
+  const run = (forceUpgrade = false) =>
     new Promise<{ code: number | null; out: string; error: string }>(
       (resolve, reject) => {
         const child = spawn("sh", ["-s"], {
@@ -60,6 +60,7 @@ function fixture(badChecksum = false) {
             MONOCODE_TEST_CHECKSUM: join(dir, "checksum"),
             MONOCODE_TEST_EVENTS: join(dir, "events"),
             MONOCODE_TEST_DOWNLOADS: join(dir, "downloads"),
+            MONOCODE_HOST_FORCE_UPGRADE: forceUpgrade ? "1" : "0",
           },
           signal: AbortSignal.timeout(10_000),
         });
@@ -91,6 +92,24 @@ it.skipIf(process.platform === "win32")(
     expect(
       readFileSync(join(dir, "downloads"), "utf8").trim().split("\n"),
     ).toHaveLength(2);
+  },
+);
+it.skipIf(process.platform === "win32")(
+  "updates an existing host only when requested, then restarts its service",
+  async () => {
+    const { dir, base, run } = fixture();
+    expect((await run()).code).toBe(0);
+    const oldRuntime = readFileSync(join(base, "runtime-path"), "utf8");
+    expect((await run(true)).code).toBe(0);
+    expect(readFileSync(join(base, "runtime-path"), "utf8")).not.toBe(
+      oldRuntime,
+    );
+    expect(
+      readFileSync(join(dir, "events"), "utf8").trim().split("\n"),
+    ).toEqual(["service install", "service uninstall", "service install"]);
+    expect(
+      readFileSync(join(dir, "downloads"), "utf8").trim().split("\n"),
+    ).toHaveLength(4);
   },
 );
 it.skipIf(process.platform === "win32")(

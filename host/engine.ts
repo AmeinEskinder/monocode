@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
-import { applyHarnessEvent } from "../src/integrations/harness/core/apply";
+import { resolveHostWorktree } from "./git-worktrees";
+import {
+  applyHarnessEvent,
+  stopStreaming,
+} from "../src/integrations/harness/core/apply";
+import { resolveModel } from "../src/features/sessions/model/models";
 import type {
   HarnessEvent,
   HarnessSessionInput,
@@ -76,6 +81,9 @@ export function parseCommand(input: unknown): HostCommand {
       type: "create",
       commandId,
       projectId: text(v.projectId, "project ID"),
+      ...(v.worktreeCwd !== undefined
+        ? { worktreeCwd: text(v.worktreeCwd, "working copy", 4096) }
+        : {}),
       harness: v.harness,
       model: text(v.model, "model", 200),
       ...(v.modelSettings !== undefined
@@ -209,6 +217,7 @@ export class HostEngine {
             value,
             "interrupted",
             "Host restarted. This turn was interrupted; inspect its work before continuing.",
+            value.updatedAt,
           ),
           { type: "interrupted" },
         );
@@ -310,6 +319,7 @@ export class HostEngine {
                 latest,
                 "interrupted",
                 "Session storage failed during this turn. Inspect its work before continuing.",
+                latest.updatedAt,
               ),
               { type: "interrupted", reason: "persistence failure" },
             );
@@ -352,6 +362,7 @@ export class HostEngine {
         if (this.switchingProjects.has(project.id))
           throw new Error("Wait for the branch switch to finish");
         this.provider(command.harness);
+        const cwd = resolveHostWorktree(project.cwd, command.worktreeCwd);
         value = {
           projectId: project.id,
           revision: 0,
@@ -359,7 +370,7 @@ export class HostEngine {
           updatedAt: Date.now(),
           session: {
             id: randomUUID(),
-            cwd: project.cwd,
+            cwd,
             harness: command.harness,
             model: command.model,
             runtimeMode: command.runtimeMode,
@@ -398,6 +409,10 @@ export class HostEngine {
               "Context compaction is unavailable for this provider",
             );
           const runId = randomUUID();
+          const model = resolveModel(
+            value.session.harness,
+            value.session.model,
+          );
           value = {
             ...value,
             status: "running",
@@ -416,6 +431,15 @@ export class HostEngine {
                   id: command.commandId,
                   role: "user",
                   text: command.type === "compact" ? "/compact" : command.text,
+                  startedAt: Date.now(),
+                  turnModel: {
+                    harness: value.session.harness,
+                    id: value.session.model,
+                    name:
+                      model.id === value.session.model
+                        ? model.name
+                        : value.session.model.replace(/^[^:]+:/, ""),
+                  },
                 },
               ],
             },
@@ -575,29 +599,12 @@ export class HostEngine {
     value: HostSession,
     status: "idle" | "interrupted",
     message?: string,
+    endedAt = Date.now(),
   ): HostSession {
+    const stopped = stopStreaming(value.session, endedAt);
     const session = {
-      ...value.session,
-      busy: false,
-      pendingQuestion: undefined,
-      backgroundTasks: undefined,
-      // Rewrite only blocks that change, so the rest keep their sync stamps.
-      blocks: value.session.blocks.map((block) =>
-        block.streaming || (block.approval && !block.approval.decided)
-          ? {
-              ...block,
-              streaming: false,
-              ...(block.approval && !block.approval.decided
-                ? {
-                    approval: {
-                      ...block.approval,
-                      decided: "cancelled" as const,
-                    },
-                  }
-                : {}),
-            }
-          : block,
-      ),
+      ...stopped,
+      blocks: [...stopped.blocks],
     };
     if (message)
       session.blocks.push({

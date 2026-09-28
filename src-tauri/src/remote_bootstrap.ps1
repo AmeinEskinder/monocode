@@ -3,6 +3,8 @@ $ProgressPreference = 'SilentlyContinue'
 $base = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.monocode-host'
 $version = @@VERSION@@
 $release = @@RELEASE@@
+$forceUpgrade = $env:MONOCODE_HOST_FORCE_UPGRADE -eq '1'
+$hostPort = if ($env:MONOCODE_HOST_PORT) { [int] $env:MONOCODE_HOST_PORT } else { 3774 }
 @@ACL@@
 
 function Download-MonoCode([string] $Url, [string] $Destination) {
@@ -46,7 +48,8 @@ try {
   }
   if ($null -eq $lock) { throw 'Another host installation is running. Try again shortly.' }
   $pointer = Join-Path $base 'runtime-path'
-  if (-not (Test-Path -LiteralPath $pointer)) {
+  $existed = Test-Path -LiteralPath $pointer
+  if (-not $existed -or $forceUpgrade) {
     $arch = $env:PROCESSOR_ARCHITEW6432
     if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
     switch ($arch.ToUpperInvariant()) {
@@ -82,12 +85,20 @@ try {
     [IO.File]::WriteAllText((Join-Path $bin 'monocode-host.cmd'), $launcher, [Text.Encoding]::ASCII)
     $nextPointer = Join-Path $temporary 'runtime-path'
     [IO.File]::WriteAllText($nextPointer, $runtime, (New-Object Text.UTF8Encoding($false)))
-    [IO.File]::Move($nextPointer, $pointer)
+    if (Test-Path -LiteralPath $pointer) {
+      [IO.File]::Replace($nextPointer, $pointer, $null)
+    } else {
+      [IO.File]::Move($nextPointer, $pointer)
+    }
   }
   $runtime = [IO.File]::ReadAllText($pointer).Trim()
   $node = Join-Path $runtime 'node.exe'
   $entry = Join-Path $runtime 'host.mjs'
-  & $node $entry service install | Out-Null
+  if ($existed -and $forceUpgrade) {
+    & $node $entry service uninstall | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the old host service.' }
+  }
+  & $node $entry service install --port $hostPort | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Host service setup failed. Check the error above and sign in to the Windows desktop as the SSH user.' }
   & $node $entry connection-info
   if ($LASTEXITCODE -ne 0) { throw 'The host did not report a connection.' }

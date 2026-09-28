@@ -24,7 +24,10 @@ import { editorPathsEqual } from "../../search/model/search";
 import type { PlanBuildTarget, Session } from "../../sessions/model/session";
 import { Play } from "../../../shared/ui/icons";
 import { BuildTargetButton } from "../../sessions/ui/SecondOpinionButton";
-import { loadDiffViewer, subscribeDiffViewer } from "../../settings/model/settings";
+import {
+  loadDiffViewer,
+  subscribeDiffViewer,
+} from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
@@ -34,6 +37,7 @@ import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
 import { SessionChangesDiff } from "../../source-control/ui/SessionChangesDiff";
 import { TerminalView } from "../../terminal/ui/TerminalView";
 import { WorkingTreeDiff } from "../../source-control/ui/WorkingTreeDiff";
+import { RemoteFileEditor } from "../../connections/ui/RemoteFileEditor";
 
 type Props = {
   pane: EditorPane;
@@ -186,6 +190,19 @@ function FilePaneComponent({
                   active={focused && file.id === pane.activeFileId}
                   onMetaChange={(patch) =>
                     onTerminalMetaChange?.(file.id, patch)
+                  }
+                />
+              ) : file.remoteFile ? (
+                <RemoteFileEditor
+                  file={
+                    file as FilePaneTab & {
+                      remoteFile: NonNullable<FilePaneTab["remoteFile"]>;
+                    }
+                  }
+                  active={focused && file.id === pane.activeFileId}
+                  onDirtyChange={(dirty) => onDirtyChange(file.id, dirty)}
+                  onErrorCountChange={(count) =>
+                    onErrorCountChange(file.id, count)
                   }
                 />
               ) : isImagePath(file.path) ? (

@@ -168,9 +168,14 @@ import { SidebarUpdateFooter } from "./SidebarUpdate";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import {
+  remotePendingWorktree,
   remoteSessionFor,
   useRemoteProjectSessions,
 } from "../../features/connections/model/connections";
+import { useRemoteWorkspace } from "../../features/connections/model/remoteWorkspace";
+import { RemoteExplorer } from "../../features/connections/ui/RemoteExplorer";
+import { RemoteChanges } from "../../features/connections/ui/RemoteChanges";
+import type { RemoteFileTarget } from "../../features/connections/model/remoteFiles";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 560;
@@ -249,6 +254,7 @@ type Props = {
   onDeleteSession?: (sessionId: string) => void;
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
   onOpenFile: OpenFileFn;
+  onOpenRemoteFile?: (target: RemoteFileTarget) => void;
   onOpenTerminal?: (cwd: string) => void;
   onFileMoved?: (from: string, to: string) => void;
   onFileDeleted?: (path: string) => void;
@@ -337,6 +343,7 @@ function SidebarComponent({
   onDeleteSession,
   onDeleteSessions,
   onOpenFile,
+  onOpenRemoteFile,
   onOpenTerminal,
   onFileMoved,
   onFileDeleted,
@@ -393,12 +400,18 @@ function SidebarComponent({
   onOpenWhatsNew,
   onDismissUpdate,
 }: Props) {
-  // A project on another machine has no local files or git checkout here;
-  // its sidebar lists the sessions on that machine.
   const remoteProject = isRemoteProjectPath(cwd);
-  const tab: SidebarTabId = remoteProject ? "sessions" : requestedTab;
+  const tab: SidebarTabId = requestedTab;
   const gitRoot = remoteProject ? "" : gitCwd || cwd;
-  const remote = useRemoteProjectSessions(cwd, tab === "sessions");
+  const remote = useRemoteProjectSessions(cwd, remoteProject);
+  const activeRemoteId = activeSessionId
+    ? remoteSessionFor(activeSessionId)
+    : undefined;
+  const remoteExecutionCwd =
+    remote.sessions.find((session) => session.id === activeRemoteId)?.cwd ??
+    (activeSessionId ? remotePendingWorktree(activeSessionId) : undefined) ??
+    (remoteProject && gitCwd && gitCwd !== cwd ? gitCwd : undefined) ??
+    undefined;
   const resize = useDragResize({
     min: MIN_WIDTH,
     max: () => Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.5)),
@@ -573,11 +586,8 @@ function SidebarComponent({
   const sessionListKey = `${cwd}\0${sessionFilters.showArchived}\0${sessionFilters.time}\0${sessionFilters.hiddenHarnesses.join(",")}\0${sessionFilters.status.working}\0${sessionFilters.status.needsApproval}\0${sessionFilters.status.done}\0${searchQuery}`;
   const sessionHarnesses = harnessesInSessions(sessions);
   const narrowedByUser = searchNarrowed || filtersActive;
-  const visibleTabs = remoteProject
-    ? (["sessions"] as SidebarTabId[])
-    : tabOrder.filter((itemId) => itemId !== "inbox");
+  const visibleTabs = tabOrder.filter((itemId) => itemId !== "inbox");
   const sortable = useAnimatedReorder(visibleTabs, (ids) => {
-    if (remoteProject) return;
     let index = 0;
     const next = tabOrder.map((itemId) =>
       itemId === "inbox" ? itemId : ids[index++],
@@ -632,8 +642,21 @@ function SidebarComponent({
   const drawerRendered = drawerVisible || drawerClosing;
   const drawerAnimation = useRef<Animation | null>(null);
   const panelOpen = open || drawerVisible;
+  const remoteWorkspace = useRemoteWorkspace(
+    cwd,
+    remoteExecutionCwd,
+    remoteProject && panelOpen,
+  );
   const gitStatuses = useGitFileStatuses(gitRoot, panelOpen && tab === "files");
-  const changeStats = useProjectDiffStats(gitRoot, panelOpen);
+  const localChangeStats = useProjectDiffStats(gitRoot, panelOpen);
+  const changeStats =
+    remoteProject && remoteWorkspace.index
+      ? {
+          files: remoteWorkspace.index.files.length,
+          additions: remoteWorkspace.index.additions,
+          deletions: remoteWorkspace.index.deletions,
+        }
+      : localChangeStats;
 
   useEffect(() => {
     if (!drawerMode || !sidebarAvailable) setDrawerOpen(false);
@@ -1481,7 +1504,28 @@ function SidebarComponent({
             tab === "files" ? "" : "hidden"
           }`}
         >
-          {filesSearchOpen ? (
+          {remoteProject ? (
+            <RemoteExplorer
+              project={remoteWorkspace.project}
+              machine={remoteWorkspace.machine}
+              cwd={remoteExecutionCwd}
+              enabled={panelOpen && tab === "files"}
+              statuses={
+                new Map(
+                  remoteWorkspace.index?.files.map((file) => [
+                    file.relative,
+                    file.status,
+                  ]) ?? [],
+                )
+              }
+              onOpenFile={onOpenRemoteFile}
+              rootLabel={remoteWorkspace.index?.branch ?? explorerRootLabel}
+              searchOpen={filesSearchOpen}
+              onSearchOpen={() => onFilesSearchOpenChange(true)}
+              onSearchClose={() => onFilesSearchOpenChange(false)}
+              searchFocusToken={searchFocusToken}
+            />
+          ) : filesSearchOpen ? (
             <ProjectSearch
               cwd={gitRoot}
               focusToken={searchFocusToken}
@@ -1852,20 +1896,31 @@ function SidebarComponent({
         </div>
         {tab === "changes" ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <SourceControl
-              cwd={gitRoot}
-              enabled={panelOpen}
-              textHarness={textHarness}
-              selectedPath={selectedDiffPath}
-              selectedKind={selectedDiffKind}
-              selectedSha={selectedCommitSha}
-              onOpenFile={
-                onOpenDiff ??
-                ((path) => onOpenFile(path, undefined, { exact: true }))
-              }
-              onOpenAllChanges={onOpenAllChanges ?? (() => {})}
-              onOpenCommit={onOpenCommit ?? (() => {})}
-            />
+            {remoteProject ? (
+              <RemoteChanges
+                project={remoteWorkspace.project}
+                machine={remoteWorkspace.machine}
+                cwd={remoteExecutionCwd}
+                index={remoteWorkspace.index}
+                error={remoteWorkspace.error}
+                refresh={remoteWorkspace.refresh}
+              />
+            ) : (
+              <SourceControl
+                cwd={gitRoot}
+                enabled={panelOpen}
+                textHarness={textHarness}
+                selectedPath={selectedDiffPath}
+                selectedKind={selectedDiffKind}
+                selectedSha={selectedCommitSha}
+                onOpenFile={
+                  onOpenDiff ??
+                  ((path) => onOpenFile(path, undefined, { exact: true }))
+                }
+                onOpenAllChanges={onOpenAllChanges ?? (() => {})}
+                onOpenCommit={onOpenCommit ?? (() => {})}
+              />
+            )}
           </div>
         ) : null}
         {showSidebarFooter ? (

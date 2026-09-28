@@ -10,7 +10,7 @@ import {
 import type { Block, Session } from "../../sessions/model/session";
 import type { AgentModel } from "../../sessions/model/models";
 import { rememberRemoteProject } from "../model/remoteProjects";
-import { remoteSessionFor } from "../model/connections";
+import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
 import type {
   HostCommand,
   HostModelCatalog,
@@ -23,10 +23,10 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
 vi.mock("../../sessions/ui/AgentTranscript", () => ({
-  AgentTranscript: ({ blocks }: { blocks: Block[] }) =>
+  AgentTranscript: ({ blocks, busy }: { blocks: Block[]; busy: boolean }) =>
     createElement(
       "ol",
-      { "aria-label": "Transcript" },
+      { "aria-label": "Transcript", "data-busy": busy },
       blocks.map((block) => createElement("li", { key: block.id }, block.text)),
     ),
 }));
@@ -61,6 +61,7 @@ let host: HostSession | undefined;
 let catalog: HostModelCatalog | Error;
 let commands: HostCommand[];
 let projectKey: string;
+let syncDelay: Promise<void> | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -68,6 +69,7 @@ beforeEach(() => {
   localStorage.setItem("monocode.modelControls", "beside");
   commands = [];
   host = undefined;
+  syncDelay = undefined;
   catalog = { models: { codex: [gpt] }, errors: {} };
   projectKey = rememberRemoteProject("env", {
     id: "project",
@@ -96,7 +98,35 @@ beforeEach(() => {
     }
     if (method === "git.branches")
       return { current: "main", branches: ["main", "dev"] };
-    if (method === "sessions.sync") return { kind: "snapshot", value: host };
+    if (method === "git.worktrees")
+      return {
+        defaultRoot: "/home/me/repo-worktrees",
+        worktrees: [
+          {
+            path: "/home/me/repo",
+            branch: "main",
+            head: "abc",
+            isMain: true,
+            missing: false,
+          },
+          {
+            path: "/home/me/repo-worktrees/dev",
+            branch: "dev",
+            head: "def",
+            isMain: false,
+            missing: false,
+          },
+        ],
+      };
+    if (method === "git.switch" || method === "git.createBranch")
+      return {
+        current: params.branch,
+        branches: ["main", "dev", params.branch],
+      };
+    if (method === "sessions.sync") {
+      if (syncDelay) await syncDelay;
+      return { kind: "snapshot", value: host };
+    }
     if (method === "commands.dispatch") return dispatch(params);
     throw new Error(`Unexpected method ${method}`);
   });
@@ -123,7 +153,7 @@ function dispatch(command: HostCommand) {
       updatedAt: 0,
       session: {
         id: "host-session",
-        cwd: "/home/me/repo",
+        cwd: command.worktreeCwd ?? "/home/me/repo",
         harness: command.harness,
         model: command.model,
         modelSettings: command.modelSettings ?? {},
@@ -176,7 +206,10 @@ const shell = (): Session => ({
   blocks: [],
 });
 
-async function render(session = shell()) {
+async function render(
+  session = shell(),
+  extra: Partial<SessionPaneProps> = {},
+) {
   const props = {
     session,
     visible: true,
@@ -186,6 +219,7 @@ async function render(session = shell()) {
     recents: [],
     onFocus: vi.fn(),
     onClose: vi.fn(),
+    ...extra,
   } as unknown as SessionPaneProps;
   await act(async () => root.render(createElement(SessionPane, props)));
   await settle();
@@ -262,6 +296,106 @@ it("creates the host session with the chosen settings on the first message", asy
   });
   expect(remoteSessionFor("shell")).toBe("host-session");
   expect(container.textContent).toContain("Fix the tests");
+});
+
+it("keeps a sent message visible until the host sync confirms it", async () => {
+  await render();
+  await send("First");
+  let releaseSync = () => {};
+  syncDelay = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+  await type("Second");
+  await act(async () => byLabel("Send")!.click());
+  expect(commands.at(-1)).toMatchObject({ type: "send", text: "Second" });
+  const secondMessages = () =>
+    [...container.querySelectorAll("ol[aria-label='Transcript'] li")].filter(
+      (item) => item.textContent === "Second",
+    );
+  expect(secondMessages()).toHaveLength(1);
+  expect(
+    container
+      .querySelector("ol[aria-label='Transcript']")
+      ?.getAttribute("data-busy"),
+  ).toBe("true");
+  await act(async () => {
+    releaseSync();
+    syncDelay = undefined;
+  });
+  await settle();
+  expect(secondMessages()).toHaveLength(1);
+});
+
+it("keeps the first turn active while its accepted message awaits host sync", async () => {
+  await render();
+  let releaseSync = () => {};
+  syncDelay = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+  await send("First remote turn");
+  expect(commands.map((command) => command.type)).toEqual(["create", "send"]);
+  const transcript = () =>
+    container.querySelector("ol[aria-label='Transcript']");
+  expect(transcript()?.textContent).toContain("First remote turn");
+  expect(transcript()?.getAttribute("data-busy")).toBe("true");
+  await act(async () => {
+    releaseSync();
+    syncDelay = undefined;
+  });
+  await settle();
+  expect(transcript()?.querySelectorAll("li")).toHaveLength(2);
+  expect(transcript()?.getAttribute("data-busy")).toBe("false");
+});
+
+it("starts a remote session in the worktree chosen before its first message", async () => {
+  await render();
+  await act(async () => byLabel("Choose remote working copy")!.click());
+  await settle();
+  const worktree = [
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+  ].find((button) => button.title === "/home/me/repo-worktrees/dev");
+  expect(worktree).toBeDefined();
+  await act(async () => worktree!.click());
+  await send("Work in dev");
+  expect(commands[0]).toMatchObject({
+    type: "create",
+    worktreeCwd: "/home/me/repo-worktrees/dev",
+  });
+  expect(host?.session.cwd).toBe("/home/me/repo-worktrees/dev");
+});
+
+it("opens another tab when a started session selects a different worktree", async () => {
+  host = {
+    projectId: "project",
+    revision: 1,
+    status: "idle",
+    updatedAt: 0,
+    session: {
+      id: "host-session",
+      cwd: "/home/me/repo",
+      harness: "codex",
+      model: "codex:gpt-test",
+      modelSettings: {},
+      runtimeMode: "supervised",
+      title: "Existing conversation",
+      blocks: [{ id: "first", role: "user", text: "Earlier work" }],
+    },
+  };
+  rememberRemoteSession("shell", "host-session");
+  const onOpenRemoteWorktree = vi.fn();
+  await render(shell(), { onOpenRemoteWorktree });
+  await act(async () => byLabel("Choose remote working copy")!.click());
+  await settle();
+  const worktree = [
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+  ].find((button) => button.title === "/home/me/repo-worktrees/dev");
+  await act(async () => worktree!.click());
+  expect(onOpenRemoteWorktree).toHaveBeenCalledWith(
+    projectKey,
+    "/home/me/repo-worktrees/dev",
+    expect.objectContaining({ model: "codex:gpt-test" }),
+  );
+  expect(commands).toHaveLength(0);
 });
 
 it("applies effort changes directly and uses them on the next turn", async () => {

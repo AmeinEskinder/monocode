@@ -402,6 +402,18 @@ pub fn bootstrap_script(platform: HostPlatform) -> String {
     }
 }
 
+pub fn upgrade_script(platform: HostPlatform, port: u16) -> String {
+    let script = bootstrap_script(platform);
+    match platform {
+        HostPlatform::Unix => {
+            format!("MONOCODE_HOST_FORCE_UPGRADE=1\nMONOCODE_HOST_PORT={port}\n{script}")
+        }
+        HostPlatform::Windows => format!(
+            "$env:MONOCODE_HOST_FORCE_UPGRADE = '1'\n$env:MONOCODE_HOST_PORT = '{port}'\n{script}"
+        ),
+    }
+}
+
 pub fn pairing_script(platform: HostPlatform, name: &str) -> String {
     match platform {
         HostPlatform::Unix => format!("set -eu\n\"$HOME/.monocode-host/bin/monocode-host\" pair --name {} --json\n", shell_quote(name)),
@@ -767,13 +779,18 @@ mod tests {
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
     }
     #[test]
-    fn bootstrap_is_versioned_and_tunnels_do_not_stop_the_remote_host() {
+    fn bootstrap_is_versioned_and_only_explicit_upgrade_restarts_the_host() {
         let script = bootstrap_script(HostPlatform::Unix);
         assert!(!script.contains("@@"));
         assert!(script.contains("--proto '=https'"));
         assert!(script.contains("checksum mismatch"));
-        assert!(!script.contains(" service uninstall"));
-        assert!(!script.contains(" service restart"));
+        assert!(script.contains("\"$FORCE_UPGRADE\" = 1"));
+        assert!(script.contains("service uninstall"));
+        assert!(
+            upgrade_script(HostPlatform::Unix, 3774).starts_with("MONOCODE_HOST_FORCE_UPGRADE=1")
+        );
+        assert!(upgrade_script(HostPlatform::Windows, 3774)
+            .starts_with("$env:MONOCODE_HOST_FORCE_UPGRADE = '1'"));
     }
     #[test]
     fn remote_platform_probe_handles_cmd_powershell_and_unix() {
