@@ -1199,6 +1199,8 @@ function RemoteHostBar({
       {workspaceMode === "current" ? (
         <div ref={anchor} className="relative flex min-w-0 shrink-0">
           <GitPickerTrigger
+            loading={!branches && !branchError}
+            dimWhenDisabled={false}
             title={
               busy
                 ? "Wait for the turn to finish to switch branches"
