@@ -233,6 +233,8 @@ export type SessionPaneProps = {
 type Props = SessionPaneProps & {
   /** Set for a session running on another machine; see Composer. */
   remoteHost?: ReactNode;
+  remoteSessionStarted?: boolean;
+  remoteSessionLoading?: boolean;
   allowedModelHarnesses?: readonly HarnessId[];
 };
 
@@ -254,6 +256,8 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
 
 const LocalSessionPane = memo(function LocalSessionPane({
   remoteHost,
+  remoteSessionStarted = false,
+  remoteSessionLoading = false,
   allowedModelHarnesses,
   session,
   reviewUndoLocked = false,
@@ -552,7 +556,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const workCwd = sessionWorkCwd(session);
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   const dockComposer =
-    !draftBlock && (!isEmpty || inSplit || !!session.inboxAsk);
+    remoteSessionStarted ||
+    (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
   const composer = (
@@ -794,7 +799,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               }
             />
           ) : null}
-          {isEmpty ? (
+          {remoteSessionLoading ? null : isEmpty ? (
             session.inboxAsk ? (
               <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
                 <DiscussionEmpty message="Explore this item with your agent." />

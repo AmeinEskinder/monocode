@@ -351,6 +351,44 @@ it("opens a host conversation in an already mounted empty tab", async () => {
   expect(commands.some((command) => command.type === "send")).toBe(true);
 });
 
+it("keeps an unopened remote conversation docked while its transcript loads", async () => {
+  dispatch({
+    type: "create",
+    commandId: "existing-session",
+    projectId: "project",
+    harness: "codex",
+    model: gpt.id,
+    runtimeMode: "supervised",
+  });
+  host = {
+    ...host!,
+    session: {
+      ...host!.session,
+      id: "unopened-session",
+      blocks: [{ id: "old-message", role: "user", text: "Earlier message" }],
+    },
+  };
+  rememberRemoteSession("shell", "unopened-session");
+  let releaseSync = () => {};
+  syncDelay = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+
+  await render();
+  const composer = container.querySelector("[data-session-composer]");
+  expect(composer?.classList.contains("max-w-4xl")).toBe(true);
+  expect(container.textContent).not.toContain("Loading conversation…");
+  expect(container.textContent).not.toContain("What should we work on?");
+
+  await act(async () => {
+    releaseSync();
+    syncDelay = undefined;
+  });
+  await settle();
+  expect(container.textContent).toContain("Earlier message");
+  expect(container.querySelector("[data-session-composer]")).toBe(composer);
+});
+
 it("keeps the branch picker visible when Git lookup fails and offers a retry", async () => {
   branchFailure = "fatal: not a git repository";
   await render();

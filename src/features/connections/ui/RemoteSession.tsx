@@ -62,6 +62,8 @@ import { RemoteWorktreePicker } from "./RemoteWorktreePicker";
 
 export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteHost: ReactNode;
+  remoteSessionStarted: boolean;
+  remoteSessionLoading: boolean;
   allowedModelHarnesses: readonly HarnessId[];
 };
 
@@ -918,6 +920,8 @@ function ConnectedRemoteSession({
   const overrides: RemoteSessionOverrides = {
     session,
     remoteHost,
+    remoteSessionStarted: !!sessionId,
+    remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     allowedModelHarnesses: hostSession
       ? [hostSession.harness]
       : providers.length
