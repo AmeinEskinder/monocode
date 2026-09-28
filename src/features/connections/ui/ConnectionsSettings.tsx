@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
-import { Globe, Loader, Plus, Trash2 } from "../../../shared/ui/icons";
+import { Internet, Loader, Plus, Trash2 } from "../../../shared/ui/icons";
 import {
   connectMachine,
   disconnectMachine,
@@ -267,7 +267,7 @@ export function ConnectionsSettings() {
           {machines.map((machine) => (
             <div key={machine.id}>
               <div className="flex items-center gap-3 px-4 py-4">
-                <Globe className="size-5 shrink-0 text-content/45" />
+                <Internet className="size-5 shrink-0 text-content/45" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13px] font-medium">
                     {machine.name}

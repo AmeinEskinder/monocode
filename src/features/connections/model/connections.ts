@@ -239,6 +239,77 @@ export function useRemoteMachines(enabled = true): {
   return state;
 }
 
+const STATUS = "monocode:remote-machine-status";
+const machineOnline = new Map<string, boolean>();
+const statusWatchers = new Map<
+  string,
+  { count: number; timer?: ReturnType<typeof setTimeout> }
+>();
+
+/** Records whether a machine answered its latest request, for every view
+ * that shows its connection state. */
+export function reportRemoteMachineStatus(machineId: string, online: boolean) {
+  if (machineOnline.get(machineId) === online) return;
+  machineOnline.set(machineId, online);
+  window.dispatchEvent(new Event(STATUS));
+}
+
+function watchMachineStatus(machineId: string): () => void {
+  const existing = statusWatchers.get(machineId);
+  if (existing) {
+    existing.count++;
+  } else {
+    const watcher: { count: number; timer?: ReturnType<typeof setTimeout> } =
+      { count: 1 };
+    statusWatchers.set(machineId, watcher);
+    let failures = 0;
+    const poll = async () => {
+      try {
+        await remoteRequest(machineId, "environment.describe");
+        failures = 0;
+        reportRemoteMachineStatus(machineId, true);
+      } catch {
+        failures = Math.min(4, failures + 1);
+        reportRemoteMachineStatus(machineId, false);
+      }
+      if (statusWatchers.get(machineId) === watcher)
+        watcher.timer = setTimeout(
+          () => void poll(),
+          failures ? Math.min(30_000, 3_000 * 2 ** failures) : 15_000,
+        );
+    };
+    void poll();
+  }
+  return () => {
+    const watcher = statusWatchers.get(machineId);
+    if (!watcher || --watcher.count > 0) return;
+    clearTimeout(watcher.timer);
+    statusWatchers.delete(machineId);
+  };
+}
+
+/** Whether a machine is reachable; undefined until the first check returns. */
+export function useRemoteMachineOnline(machineId?: string): boolean | undefined {
+  const [online, setOnline] = useState(() =>
+    machineId ? machineOnline.get(machineId) : undefined,
+  );
+  useEffect(() => {
+    if (!machineId) {
+      setOnline(undefined);
+      return;
+    }
+    const update = () => setOnline(machineOnline.get(machineId));
+    update();
+    window.addEventListener(STATUS, update);
+    const unwatch = watchMachineStatus(machineId);
+    return () => {
+      window.removeEventListener(STATUS, update);
+      unwatch();
+    };
+  }, [machineId]);
+  return online;
+}
+
 const historyKey = (project: string) => `monocode.remote-history.v2:${project}`;
 
 function cachedSessions(project: string): HostSessionSummary[] {

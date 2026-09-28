@@ -3,7 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderPlus,
-  Globe,
+  Internet,
   Inbox,
   MoreHorizontal,
   Pin,
@@ -83,6 +83,10 @@ import { useNotificationProjects } from "../../features/notifications/hooks/useN
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import { Popover } from "../../shared/ui/Popover";
 import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
+import {
+  useRemoteMachineOnline,
+  useRemoteMachines,
+} from "../../features/connections/model/connections";
 import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useProjectMenu } from "./useProjectMenu";
 
@@ -864,13 +868,36 @@ function ProjectCard({
   const deletions = stats?.deletions ?? 0;
   const hasChanges = files > 0 || additions > 0 || deletions > 0;
   const remote = remoteProjectFor(item.path);
+  const { machines } = useRemoteMachines(!!remote);
+  const machine = remote
+    ? machines.find((entry) => entry.environmentId === remote.environmentId)
+    : undefined;
+  const online = useRemoteMachineOnline(machine?.id);
+  const connection = !remote
+    ? ""
+    : !machine
+      ? "Machine not connected on this computer"
+      : online === undefined
+        ? "Connecting"
+        : online
+          ? "Connected"
+          : "Reconnecting";
   const cardTitle = projectCardTitle(
-    remote ? `${remote.cwd} (on another machine)` : item.path,
+    remote
+      ? `${remote.cwd} on ${machine?.name ?? "another machine"} (${connection})`
+      : item.path,
     name,
     stats,
     busy,
   );
-  const cardAriaLabel = projectCardAriaLabel(name, stats, busy);
+  const cardAriaLabel = projectCardAriaLabel(
+    machine ? `${name} on ${machine.name}` : name,
+    stats,
+    busy,
+  );
+  const labelClassName = machine
+    ? "min-w-0 max-w-[75%] shrink-0 truncate text-sm font-medium leading-tight"
+    : nameClassName;
 
   return (
     <div
@@ -932,12 +959,17 @@ function ProjectCard({
           )}
         </div>
         {busy ? (
-          <Shimmer as="span" duration={1.4} className={nameClassName}>
+          <Shimmer as="span" duration={1.4} className={labelClassName}>
             {name}
           </Shimmer>
         ) : (
-          <span className={nameClassName}>{name}</span>
+          <span className={labelClassName}>{name}</span>
         )}
+        {machine ? (
+          <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-content/45">
+            {machine.name}
+          </span>
+        ) : null}
         {hasChanges ? (
           <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden">
             <ProjectDiffStat additions={additions} deletions={deletions} />
@@ -946,10 +978,16 @@ function ProjectCard({
         {remote ? (
           <span
             role="img"
-            aria-label="On another machine"
-            className="grid size-4 shrink-0 place-items-center text-content/45"
+            aria-label={connection}
+            className="relative grid size-4 shrink-0 place-items-center text-content/45"
           >
-            <Globe className="size-3" strokeWidth={1.75} aria-hidden="true" />
+            <Internet className="size-3" strokeWidth={1.75} aria-hidden="true" />
+            <span
+              aria-hidden="true"
+              className={`absolute right-0 bottom-0 size-1.5 rounded-full ring-1 ring-background-base ${
+                online ? "bg-emerald-400" : "bg-content/35"
+              }`}
+            />
           </span>
         ) : null}
         {muteStatus ? (
@@ -1137,7 +1175,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
               window.dispatchEvent(new Event(OPEN_REMOTE_PROJECT_EVENT));
             }}
           >
-            <Globe className="size-3.5 shrink-0" strokeWidth={1.75} />
+            <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />
             Open folder on a machine…
           </button>
         </Popover>

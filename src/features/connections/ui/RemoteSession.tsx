@@ -22,7 +22,6 @@ import { Popover } from "../../../shared/ui/Popover";
 import {
   Check,
   GitBranch,
-  Globe,
   Plus,
   Search,
   X,
@@ -36,6 +35,7 @@ import {
   rememberRemoteSession,
   REMOTE_HISTORY_CHANGE,
   remoteRequest,
+  reportRemoteMachineStatus,
   remotePendingWorktree,
   remoteSessionFor,
   savePendingRemoteCommand,
@@ -346,6 +346,7 @@ function ConnectedRemoteSession({
         if (next && next.projectId !== project.projectId)
           throw new Error("This session belongs to a different host project");
         setOnline(true);
+        reportRemoteMachineStatus(machine.id, true);
         setConnectionError("");
         // A catalog request that failed while offline is retried on recovery.
         if (failed) setCatalogRefresh((value) => value + 1);
@@ -358,6 +359,7 @@ function ConnectedRemoteSession({
       } catch (reason) {
         if (disposed) return;
         setOnline(false);
+        reportRemoteMachineStatus(machine.id, false);
         setConnectionError(String(reason));
         described = false;
         failed++;
@@ -1259,8 +1261,9 @@ function ConnectedRemoteSession({
   );
 }
 
-/** The composer's top row for a remote session: where it runs and on which
- * host branch, in the same style as the local project and branch pickers. */
+/** The composer's top row for a remote session: which checkout and host
+ * branch it runs in, in the same style as the local branch picker. The
+ * machine and its connection state are shown in the project rail. */
 function RemoteHostBar({
   machine,
   project,
@@ -1363,22 +1366,6 @@ function RemoteHostBar({
   };
   return (
     <>
-      <span
-        className="flex min-w-0 max-w-44 shrink items-center gap-1.5 text-content/50"
-        title={`${machine.name} · ${project.cwd}`}
-      >
-        <span className="relative shrink-0">
-          <Globe className="size-3.5" strokeWidth={1.5} />
-          <span
-            aria-hidden
-            className={`absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full ring-1 ring-background-base ${
-              online ? "bg-emerald-400" : "bg-content/35"
-            }`}
-          />
-        </span>
-        <span className="truncate font-mono text-[12px]">{machine.name}</span>
-        <span className="sr-only">{online ? "Connected" : "Reconnecting"}</span>
-      </span>
       <RemoteWorktreePicker
         machine={machine}
         project={project}

@@ -166,7 +166,7 @@ export function AddRemoteProjectDialog({
             )}
             <input
               aria-label="Folder path on the machine"
-              className="h-8 rounded-md border border-content/10 bg-content/3 px-2.5 font-mono text-[12px] text-content outline-none focus:border-content/25"
+              className="h-8 shrink-0 rounded-md border border-content/10 bg-content/3 px-2.5 font-mono text-[12px] text-content outline-none focus:border-content/25"
               placeholder="/home/me/code/my-app"
               value={path}
               spellCheck={false}

@@ -367,10 +367,11 @@ async function chooseEffort(label: string) {
   await settle();
 }
 
-it("uses the normal composer with the machine and host branch in its top row", async () => {
+it("uses the normal composer with the host branch in its top row", async () => {
   await render();
   expect(container.querySelector("textarea")).not.toBeNull();
-  expect(container.textContent).toContain("Home server");
+  // The machine is named in the project rail, not the composer.
+  expect(container.textContent).not.toContain("Home server");
   expect(byLabel("Host branch main")).not.toBeNull();
   expect(
     [...container.querySelectorAll("button")].some(
