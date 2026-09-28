@@ -668,7 +668,9 @@ mod tests {
         };
         assert!(!connection_refused(&error));
         server.join().unwrap();
-        let error = ureq::get(&url).call().unwrap_err();
+        // A freed ephemeral port can be claimed by another parallel fixture.
+        // Exercise ureq's actual wrapped I/O source without that port race.
+        let error = ureq::Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
         let ureq::Error::Transport(error) = error else {
             panic!("Expected a refused connection")
         };

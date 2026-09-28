@@ -1,9 +1,14 @@
 import { spawn } from "node:child_process";
 import { Socket } from "node:net";
+import { createReadStream } from "node:fs";
 import { join } from "node:path";
 
 // fd 3 belongs only to the host. EOF means it exited, even after a hard crash.
-const parent = new Socket({ fd: 3, readable: true, writable: false });
+// Unix stdio pipes are sockets: destroying one cancels its pending read.
+// A filesystem read can otherwise keep a worker blocked during guard exit.
+const parent = process.platform === "win32"
+  ? createReadStream("/dev/null", { fd: 3, autoClose: false })
+  : new Socket({ fd: 3, readable: true, writable: false });
 parent.resume();
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("Missing provider command");
