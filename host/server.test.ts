@@ -396,6 +396,17 @@ describe("remote host API", () => {
       ).value.result,
     ).toEqual([expect.objectContaining({ path: "src/app.ts" })]);
     expect(
+      (
+        await s.call("files.searchContent", {
+          projectId: project.id,
+          query: "after",
+        })
+      ).value.result,
+    ).toMatchObject({
+      matches: [expect.objectContaining({ relative: "src/app.ts", line: 1 })],
+      truncated: false,
+    });
+    expect(
       (await s.call("files.list", { projectId: project.id, path: "src" })).value
         .result[0].name,
     ).toBe("app.ts");
@@ -446,6 +457,25 @@ describe("remote host API", () => {
         })
       ).value.error,
     ).toContain("outside");
+    expect(
+      (
+        await s.call("git.action", {
+          projectId: project.id,
+          action: "stageContents",
+          path: "src/app.ts",
+          content: "selected\n",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await s.call("git.fileDiff", {
+          projectId: project.id,
+          path: "src/app.ts",
+          staged: true,
+        })
+      ).value.result.current,
+    ).toBe("selected\n");
     expect(
       (
         await s.call("git.action", {

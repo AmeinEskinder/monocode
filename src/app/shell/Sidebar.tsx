@@ -174,6 +174,7 @@ import {
 } from "../../features/connections/model/connections";
 import { useRemoteWorkspace } from "../../features/connections/model/remoteWorkspace";
 import { RemoteExplorer } from "../../features/connections/ui/RemoteExplorer";
+import { RemoteProjectSearch } from "../../features/connections/ui/RemoteProjectSearch";
 import { RemoteChanges } from "../../features/connections/ui/RemoteChanges";
 import type { RemoteFileTarget } from "../../features/connections/model/remoteFiles";
 
@@ -1504,7 +1505,16 @@ function SidebarComponent({
             tab === "files" ? "" : "hidden"
           }`}
         >
-          {remoteProject ? (
+          {remoteProject && filesSearchOpen ? (
+            <RemoteProjectSearch
+              project={remoteWorkspace.project}
+              machine={remoteWorkspace.machine}
+              cwd={remoteExecutionCwd}
+              focusToken={searchFocusToken}
+              onOpenFile={onOpenRemoteFile}
+              onClose={() => onFilesSearchOpenChange(false)}
+            />
+          ) : remoteProject ? (
             <RemoteExplorer
               project={remoteWorkspace.project}
               machine={remoteWorkspace.machine}
@@ -1519,11 +1529,9 @@ function SidebarComponent({
                 )
               }
               onOpenFile={onOpenRemoteFile}
-              rootLabel={remoteWorkspace.index?.branch ?? explorerRootLabel}
-              searchOpen={filesSearchOpen}
-              onSearchOpen={() => onFilesSearchOpenChange(true)}
-              onSearchClose={() => onFilesSearchOpenChange(false)}
-              searchFocusToken={searchFocusToken}
+              onSearchOpen={
+                onOpenFilesSearch ?? (() => onFilesSearchOpenChange(true))
+              }
             />
           ) : filesSearchOpen ? (
             <ProjectSearch
@@ -1904,6 +1912,9 @@ function SidebarComponent({
                 index={remoteWorkspace.index}
                 error={remoteWorkspace.error}
                 refresh={remoteWorkspace.refresh}
+                selectedPath={selectedDiffPath}
+                selectedKind={selectedDiffKind}
+                onOpenFile={onOpenRemoteFile}
               />
             ) : (
               <SourceControl

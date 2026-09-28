@@ -38,6 +38,7 @@ import { SessionChangesDiff } from "../../source-control/ui/SessionChangesDiff";
 import { TerminalView } from "../../terminal/ui/TerminalView";
 import { WorkingTreeDiff } from "../../source-control/ui/WorkingTreeDiff";
 import { RemoteFileEditor } from "../../connections/ui/RemoteFileEditor";
+import { RemoteWorkingTreeDiff } from "../../connections/ui/RemoteWorkingTreeDiff";
 
 type Props = {
   pane: EditorPane;
@@ -138,11 +139,15 @@ function FilePaneComponent({
           </div>
         ) : unifiedReview && activeFile ? (
           <div className="absolute inset-0 h-full">
-            <WorkingTreeDiff
-              cwd={activeFile.cwd}
-              focusPath={activeFile.path}
-              focusKind={activeFile.changeKind}
-            />
+            {activeFile.remoteFile ? (
+              <RemoteWorkingTreeDiff file={activeFile} />
+            ) : (
+              <WorkingTreeDiff
+                cwd={activeFile.cwd}
+                focusPath={activeFile.path}
+                focusKind={activeFile.changeKind}
+              />
+            )}
           </div>
         ) : null}
         {pane.files.map((file) => {
@@ -200,6 +205,12 @@ function FilePaneComponent({
                     }
                   }
                   active={focused && file.id === pane.activeFileId}
+                  navigation={
+                    editorNavigation &&
+                    editorPathsEqual(file.path, editorNavigation.path)
+                      ? editorNavigation
+                      : null
+                  }
                   onDirtyChange={(dirty) => onDirtyChange(file.id, dirty)}
                   onErrorCountChange={(count) =>
                     onErrorCountChange(file.id, count)

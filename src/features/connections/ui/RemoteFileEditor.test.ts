@@ -13,16 +13,63 @@ vi.mock("../../files/ui/FileEditor", async () => {
     CodeMirrorEditor: ({
       value,
       onSave,
+      showDiff,
+      gitOriginal,
     }: {
       value: string;
       onSave: (value: string) => Promise<void>;
+      showDiff: boolean;
+      gitOriginal: string | null;
     }) =>
       React.createElement(
         "button",
-        { onClick: () => void onSave("edited\n") },
+        {
+          onClick: () => void onSave("edited\n"),
+          "data-show-diff": showDiff,
+          "data-original": gitOriginal,
+        },
         value,
       ),
   };
+});
+
+it("loads a host diff into the workspace editor review", async () => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command !== "remote_request")
+      throw new Error(`Unexpected command ${command}`);
+    if (args?.method === "files.read") return "changed\n";
+    if (args?.method === "git.fileDiff")
+      return {
+        original: "original\n",
+        current: "changed\n",
+        binary: false,
+        tooLarge: false,
+      };
+    throw new Error(`Unexpected method ${args?.method}`);
+  });
+  await act(async () =>
+    root.render(
+      createElement(RemoteFileEditor, {
+        file: { ...file, review: true, changeKind: "staged" },
+        active: true,
+        onDirtyChange: () => {},
+        onErrorCountChange: () => {},
+      }),
+    ),
+  );
+  const editor = container.querySelector("button")!;
+  expect(editor.dataset.showDiff).toBe("true");
+  expect(editor.dataset.original).toBe("original\n");
+  expect(invoke).toHaveBeenCalledWith("remote_request", {
+    machineId: "machine",
+    method: "git.fileDiff",
+    params: {
+      projectId: "project",
+      cwd: "/repo",
+      path: "src/index.ts",
+      staged: true,
+    },
+  });
 });
 
 const file: FilePaneTab & {

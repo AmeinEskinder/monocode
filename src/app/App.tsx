@@ -155,6 +155,7 @@ import {
   newTerminalWorkspaceTab,
   nextTerminalTitle,
   openChangesTab,
+  openRemoteChangesTab,
   openCommitTab,
   newAgentTab,
   openEditorTab,
@@ -5467,18 +5468,38 @@ export default function App({
         ...newFileTab(
           remoteFilePath(target),
           target.cwd,
-          false,
-          undefined,
+          !!target.changeKind,
+          target.changeKind,
           target.projectKey,
         ),
+        ...(target.changeKind && loadDiffViewer() === "unified"
+          ? { changes: true }
+          : {}),
         remoteFile: {
           machineId: target.machineId,
           projectId: target.projectId,
           relativePath: target.relativePath,
         },
       };
+      if (target.changeKind) {
+        setTabs((previous) =>
+          previous.map((entry) =>
+            entry.id === tab.id
+              ? file.changes
+                ? openRemoteChangesTab(entry, file)
+                : openEditorTab(entry, file, { pin: target.pin })
+              : entry,
+          ),
+        );
+        setSidebarTab("changes", target.projectKey);
+        setComposerFocused(false);
+        return;
+      }
       if (loadFileTabMode() === "workspace") {
-        const created = newEditorWorkspaceTab({ ...file, preview: true });
+        const created = newEditorWorkspaceTab({
+          ...file,
+          preview: !target.pin,
+        });
         let opened: { tabId: string; paneId?: string } | undefined;
         flushSync(() => {
           setTabs((previous) => {
@@ -5487,6 +5508,7 @@ export default function App({
               file,
               created,
               (tabs, next) => insertBesideActive(tabs, next, target.projectKey),
+              target.pin,
             );
             opened = result;
             return result.tabs;
@@ -5504,9 +5526,18 @@ export default function App({
             );
             return openEditorTab(entry, file, {
               split: focusedSession?.blocks.length === 0 ? "left" : "right",
+              pin: target.pin,
             });
           }),
         );
+      }
+      if (target.navigation) {
+        editorNavigationToken.current += 1;
+        setEditorNavigation({
+          path: file.path,
+          ...target.navigation,
+          token: editorNavigationToken.current,
+        });
       }
       setComposerFocused(false);
     },

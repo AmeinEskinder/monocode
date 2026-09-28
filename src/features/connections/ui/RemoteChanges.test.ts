@@ -77,3 +77,95 @@ it("offers the connection update path without displaying a raw host error", asyn
   expect(container.textContent).not.toContain("Unsupported host method");
   expect(container.textContent).toContain("Open connection settings");
 });
+
+it("only shows Create PR away from the default branch", async () => {
+  const props = {
+    index: {
+      ...empty,
+      branch: "master",
+      defaultBranch: "master",
+      remote: "origin",
+      upstream: "origin/master",
+    },
+    error: "",
+    refresh: () => {},
+  };
+  await act(async () => root.render(createElement(RemoteChanges, props)));
+  expect(
+    [...container.querySelectorAll("button")].some(
+      (button) => button.textContent?.trim() === "Create PR",
+    ),
+  ).toBe(false);
+
+  await act(async () =>
+    root.render(
+      createElement(RemoteChanges, {
+        ...props,
+        index: {
+          ...props.index,
+          branch: "feature/test",
+          upstream: "origin/feature/test",
+          aheadOfDefault: 1,
+        },
+      }),
+    ),
+  );
+  const createPr = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent?.trim() === "Create PR",
+  );
+  expect(createPr).not.toBeUndefined();
+  expect(createPr?.disabled).toBe(false);
+});
+
+it("opens a changed host file in the workspace with its diff side and pin state", async () => {
+  const onOpenFile = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(RemoteChanges, {
+        project: {
+          key: "remote://env/repo",
+          environmentId: "env",
+          projectId: "project",
+          cwd: "/repo",
+        },
+        machine: {
+          id: "machine",
+          name: "Host",
+          environmentId: "env",
+          endpoint: "ssh://host",
+        },
+        cwd: "/repo/worktree",
+        index: {
+          ...empty,
+          files: [
+            {
+              path: "/repo/worktree/README.md",
+              relative: "README.md",
+              status: "modified",
+              additions: 1,
+              deletions: 1,
+              staged: true,
+              unstaged: true,
+            },
+          ],
+        },
+        error: "",
+        refresh: () => {},
+        onOpenFile,
+      }),
+    ),
+  );
+  const buttons = [...container.querySelectorAll("button[title='README.md']")];
+  expect(buttons).toHaveLength(2);
+  await act(async () => buttons[0].click());
+  expect(onOpenFile).toHaveBeenCalledWith({
+    machineId: "machine",
+    projectId: "project",
+    projectKey: "remote://env/repo",
+    cwd: "/repo/worktree",
+    relativePath: "README.md",
+    changeKind: "staged",
+    pin: undefined,
+  });
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});

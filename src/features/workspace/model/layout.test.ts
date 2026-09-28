@@ -33,6 +33,7 @@ import {
   openSessionChangesTab,
   pinEditorFile,
   openWorkspaceFile,
+  openRemoteChangesTab,
   openTerminalTab,
   paneEdgeFromPoint,
   placePane,
@@ -64,6 +65,48 @@ describe("preview tabs", () => {
     let tab = openEditorTab(newTab("s"), first, { pin: true });
     tab = openEditorTab(tab, second, { pin: true });
     expect(tab.editorPanes[0]?.files).toHaveLength(2);
+  });
+  it("keeps host file and review tabs distinct and retargets one unified review", () => {
+    const ordinary = {
+      ...newFileTab("/repo/a.ts", "/repo"),
+      remoteFile: {
+        machineId: "machine",
+        projectId: "project",
+        relativePath: "a.ts",
+      },
+    };
+    const review = {
+      ...ordinary,
+      id: crypto.randomUUID(),
+      review: true,
+      changeKind: "staged" as const,
+    };
+    const changes = { ...review, id: crypto.randomUUID(), changes: true };
+    expect(editorTabKey(ordinary)).not.toBe(editorTabKey(review));
+    expect(editorTabKey(review)).not.toBe(editorTabKey(changes));
+    let tab = openEditorTab(newTab("s"), ordinary, { pin: true });
+    tab = openEditorTab(tab, review, { pin: true });
+    tab = openEditorTab(tab, { ...review, changeKind: "unstaged" });
+    expect(
+      tab.editorPanes
+        .flatMap((pane) => pane.files)
+        .find((file) => file.review && !file.changes)?.changeKind,
+    ).toBe("unstaged");
+    tab = openRemoteChangesTab(tab, changes);
+    tab = openRemoteChangesTab(tab, {
+      ...changes,
+      id: crypto.randomUUID(),
+      path: "/repo/b.ts",
+      changeKind: "unstaged",
+      remoteFile: { ...changes.remoteFile, relativePath: "b.ts" },
+    });
+    const open = tab.editorPanes.flatMap((pane) => pane.files);
+    expect(open).toHaveLength(2);
+    expect(open.find((file) => file.changes)).toMatchObject({
+      path: "/repo/b.ts",
+      changeKind: "unstaged",
+      remoteFile: { relativePath: "b.ts" },
+    });
   });
   const paths = (tab: WorkspaceTab) =>
     tab.editorPanes[0]?.files.map((file) => [file.path, !!file.preview]);

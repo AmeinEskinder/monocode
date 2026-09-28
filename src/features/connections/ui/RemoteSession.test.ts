@@ -62,6 +62,7 @@ let catalog: HostModelCatalog | Error;
 let commands: HostCommand[];
 let projectKey: string;
 let syncDelay: Promise<void> | undefined;
+let branchFailure: string | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -70,6 +71,7 @@ beforeEach(() => {
   commands = [];
   host = undefined;
   syncDelay = undefined;
+  branchFailure = undefined;
   catalog = { models: { codex: [gpt] }, errors: {} };
   projectKey = rememberRemoteProject("env", {
     id: "project",
@@ -96,8 +98,10 @@ beforeEach(() => {
       if (catalog instanceof Error) throw catalog.message;
       return catalog;
     }
-    if (method === "git.branches")
+    if (method === "git.branches") {
+      if (branchFailure) throw new Error(branchFailure);
       return { current: "main", branches: ["main", "dev"] };
+    }
     if (method === "git.worktrees")
       return {
         defaultRoot: "/home/me/repo-worktrees",
@@ -263,6 +267,11 @@ it("uses the normal composer with the machine and host branch in its top row", a
   expect(container.querySelector("textarea")).not.toBeNull();
   expect(container.textContent).toContain("Home server");
   expect(byLabel("Host branch main")).not.toBeNull();
+  expect(
+    [...container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Changes",
+    ),
+  ).toBe(false);
   // The host's model, keeping the tab's effort where the model supports it.
   expect(byLabel("Reasoning:")?.getAttribute("aria-label")).toBe(
     "Reasoning: High",
@@ -276,6 +285,22 @@ it("uses the normal composer with the machine and host branch in its top row", a
     byLabel("Add files or choose a mode")?.closest(".hidden"),
   ).not.toBeNull();
   expect(byLabel("Project ")).toBeNull();
+});
+
+it("keeps the branch picker visible when Git lookup fails and offers a retry", async () => {
+  branchFailure = "fatal: not a git repository";
+  await render();
+  const picker = byLabel("Host branch No repo");
+  expect(picker).not.toBeNull();
+  await act(async () => picker!.click());
+  expect(document.body.textContent).toContain("not a git repository");
+  branchFailure = undefined;
+  const retry = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent === "Retry");
+  await act(async () => retry!.click());
+  await settle();
+  expect(byLabel("Host branch main")).not.toBeNull();
 });
 
 it("creates the host session with the chosen settings on the first message", async () => {

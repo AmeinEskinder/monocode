@@ -11,11 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createHostPath,
   hostFileDiff,
   hostGitAction,
   hostGitIndex,
   listHostFiles,
   readHostFile,
+  searchHostContent,
   searchHostFiles,
   writeHostFile,
 } from "./workspace";
@@ -48,6 +50,27 @@ it("lists host files and rejects paths escaping the project", async () => {
   );
   await writeHostFile(root, "src/app.ts", "source\n", "edited\n");
   expect(await readHostFile(root, "src/app.ts")).toBe("edited\n");
+  expect(await searchHostContent(root, { query: "edited" })).toMatchObject({
+    matches: [
+      expect.objectContaining({ relative: "src/app.ts", line: 1, column: 1 }),
+    ],
+    truncated: false,
+  });
+  expect(await createHostPath(root, "src", "nested/new.ts", false)).toBe(
+    "src/nested/new.ts",
+  );
+  expect(await readHostFile(root, "src/nested/new.ts")).toBe("");
+  expect(await createHostPath(root, "", "assets", true)).toBe("assets");
+  await expect(createHostPath(root, "src", "app.ts", false)).rejects.toThrow();
+  await expect(
+    createHostPath(root, "", "../outside.txt", false),
+  ).rejects.toThrow("Invalid file name");
+  await expect(createHostPath(root, "", ".git/config", false)).rejects.toThrow(
+    "Invalid file name",
+  );
+  await expect(
+    createHostPath(root, "outside", "bad.ts", false),
+  ).rejects.toThrow("outside");
   await expect(
     writeHostFile(root, "src/app.ts", "source\n", "lost\n"),
   ).rejects.toThrow("changed on the host");
@@ -78,6 +101,49 @@ it("reports tracked and untracked changes and commits staged files", async () =>
   writeFileSync(join(root, "new.ts"), "new\n");
 
   const index = await hostGitIndex(root);
+  expect(
+    await searchHostContent(root, {
+      query: "AFTER",
+      include: "app.ts",
+      caseSensitive: false,
+    }),
+  ).toMatchObject({
+    matches: [
+      expect.objectContaining({ relative: "app.ts", line: 1, column: 1 }),
+    ],
+  });
+  expect(
+    (
+      await searchHostContent(root, {
+        query: "after",
+        exclude: "app.ts",
+      })
+    ).matches,
+  ).toEqual([]);
+  expect(
+    (
+      await searchHostContent(root, {
+        query: "AFTER",
+        caseSensitive: true,
+      })
+    ).matches,
+  ).toEqual([]);
+  expect(
+    (
+      await searchHostContent(root, {
+        query: "aft",
+        wholeWord: true,
+      })
+    ).matches,
+  ).toEqual([]);
+  expect(
+    (
+      await searchHostContent(root, {
+        query: "aft.r",
+        regex: true,
+      })
+    ).matches,
+  ).toEqual([expect.objectContaining({ relative: "app.ts", line: 1 })]);
   expect(index.files).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -127,4 +193,32 @@ it("reports tracked and untracked changes and commits staged files", async () =>
   writeFileSync(join(root, "app.ts"), "discard this\n");
   await hostGitAction(root, "discard", "app.ts");
   expect((await hostGitIndex(root)).files).toEqual([]);
+});
+
+it("stages selected host diff content without replacing the working file", async () => {
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "monocode-workspace-hunk-")),
+  );
+  roots.push(root);
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  git("init", "-q");
+  git("config", "user.name", "Workspace Test");
+  git("config", "user.email", "workspace@example.test");
+  writeFileSync(join(root, "app.ts"), "one\ntwo\nthree\n");
+  git("add", "app.ts");
+  git("commit", "-qm", "initial");
+  writeFileSync(join(root, "app.ts"), "ONE\ntwo\nTHREE\n");
+  await hostGitAction(
+    root,
+    "stageContents",
+    "app.ts",
+    undefined,
+    "ONE\ntwo\nthree\n",
+  );
+  expect(git("show", ":app.ts")).toBe("ONE\ntwo\nthree\n");
+  expect(await readHostFile(root, "app.ts")).toBe("ONE\ntwo\nTHREE\n");
+  await expect(
+    hostGitAction(root, "stageContents", "../escape", undefined, "x"),
+  ).rejects.toThrow("outside");
 });

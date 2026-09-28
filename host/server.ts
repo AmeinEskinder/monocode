@@ -25,11 +25,13 @@ import {
   resolveHostWorktreeAsync,
 } from "./git-worktrees";
 import {
+  createHostPath,
   hostFileDiff,
   hostGitAction,
   hostGitIndex,
   listHostFiles,
   readHostFile,
+  searchHostContent,
   searchHostFiles,
   writeHostFile,
 } from "./workspace";
@@ -180,6 +182,8 @@ export function createHostServer(
                 "files.read",
                 "files.list",
                 "files.search",
+                "files.searchContent",
+                "files.create",
                 "files.write",
                 "git.index",
                 "git.fileDiff",
@@ -353,6 +357,28 @@ export function createHostServer(
             );
             break;
           }
+          case "files.searchContent": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await searchHostContent(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params,
+            );
+            break;
+          }
+          case "files.create": {
+            const project = engine.store.project(
+              String(params.projectId ?? ""),
+            );
+            result = await createHostPath(
+              await resolveHostWorktreeAsync(project.cwd, params.cwd),
+              params.parent,
+              params.name,
+              params.isDir,
+            );
+            break;
+          }
           case "files.write": {
             const project = engine.store.project(
               String(params.projectId ?? ""),
@@ -393,7 +419,13 @@ export function createHostServer(
             const cwd = await resolveHostWorktreeAsync(project.cwd, params.cwd);
             result =
               (await engine.withIdleProject(project.id, () =>
-                hostGitAction(cwd, params.action, params.path, params.message),
+                hostGitAction(
+                  cwd,
+                  params.action,
+                  params.path,
+                  params.message,
+                  params.content,
+                ),
               )) ?? null;
             break;
           }

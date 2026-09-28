@@ -61,6 +61,30 @@ describe("project return snapshots", () => {
     malformed.tabs[0].editorPanes[0].files[0].remoteFile = { machineId: 42 };
     expect(parseWorkspaceSnapshot(malformed)).toBeNull();
   });
+  it("restores a host diff tab with its review state", () => {
+    const file = {
+      ...newFileTab("/repo/a.ts", "/repo", true, "staged"),
+      remoteFile: {
+        machineId: "machine",
+        projectId: "project",
+        relativePath: "a.ts",
+      },
+    };
+    const tab = newEditorWorkspaceTab(file);
+    const snapshot = collectWorkspaceSnapshot(
+      [tab],
+      [],
+      tab.id,
+      "/repo",
+      new Map(),
+    );
+    const restored = parseWorkspaceSnapshot(snapshot);
+    expect(restored?.tabs[0].editorPanes[0].files[0]).toMatchObject({
+      review: true,
+      changeKind: "staged",
+      remoteFile: file.remoteFile,
+    });
+  });
   function saved() {
     const sessions = [
       chat("a1", "/alpha"),

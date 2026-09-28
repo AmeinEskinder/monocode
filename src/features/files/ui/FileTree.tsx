@@ -1189,7 +1189,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
   );
 }
 
-function NameRow({
+export function NameRow({
   depth,
   isDir,
   initial = "",

@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
 import type {
   Block,
@@ -76,6 +69,22 @@ type OptimisticTurn = {
 };
 
 const noop = () => {};
+const cachedSessionSnapshots = new Map<string, HostSession>();
+const cachedDescriptors = new Map<string, HostDescriptor>();
+const cachedCatalogs = new Map<string, HostModelCatalog>();
+const cachedBranches = new Map<string, HostBranches>();
+const snapshotKey = (machineId: string, sessionId: string) =>
+  `${machineId}:${sessionId}`;
+const catalogKey = (machineId: string, projectId: string) =>
+  JSON.stringify([machineId, projectId]);
+const branchKey = (machineId: string, projectId: string, cwd: string) =>
+  JSON.stringify([machineId, projectId, cwd]);
+function rememberSessionSnapshot(key: string, snapshot: HostSession) {
+  cachedSessionSnapshots.delete(key);
+  cachedSessionSnapshots.set(key, snapshot);
+  if (cachedSessionSnapshots.size > 8)
+    cachedSessionSnapshots.delete(cachedSessionSnapshots.keys().next().value!);
+}
 
 /** A tab in a project on another machine. The host owns the session; this
  * renders the normal session pane with actions routed to the host. */
@@ -147,19 +156,37 @@ function ConnectedRemoteSession({
   project: RemoteProject;
   render: (overrides: RemoteSessionOverrides) => ReactNode;
 }) {
-  const [descriptor, setDescriptor] = useState<HostDescriptor>();
+  const [descriptor, setDescriptor] = useState<HostDescriptor | undefined>(() =>
+    cachedDescriptors.get(machine.id),
+  );
   const [online, setOnline] = useState(false);
   const [connectionError, setConnectionError] = useState("");
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState(() => remoteSessionFor(shell.id));
-  const [snapshot, setSnapshot] = useState<HostSession>();
+  const [snapshot, setSnapshot] = useState<HostSession | undefined>(() =>
+    sessionId
+      ? cachedSessionSnapshots.get(snapshotKey(machine.id, sessionId))
+      : undefined,
+  );
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const [refresh, setRefresh] = useState(0);
-  const [catalog, setCatalog] = useState<HostModelCatalog>();
+  const [catalog, setCatalog] = useState<HostModelCatalog | undefined>(() =>
+    cachedCatalogs.get(catalogKey(machine.id, project.projectId)),
+  );
   const [catalogError, setCatalogError] = useState("");
   const [catalogRefresh, setCatalogRefresh] = useState(0);
-  const [branches, setBranches] = useState<HostBranches>();
+  const initialCwd =
+    snapshot && snapshot.session.id === sessionId
+      ? snapshot.session.cwd
+      : (remotePendingWorktree(shell.id) ?? project.cwd);
+  const [branches, setBranches] = useState<HostBranches | undefined>(() =>
+    cachedBranches.get(branchKey(machine.id, project.projectId, initialCwd)),
+  );
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchError, setBranchError] = useState("");
+  const [branchRefresh, setBranchRefresh] = useState(0);
+  const branchCwd = useRef(initialCwd);
   const [selectedCwd, setSelectedCwd] = useState(
     () => remotePendingWorktree(shell.id) ?? project.cwd,
   );
@@ -258,6 +285,7 @@ function ConnectedRemoteSession({
               "Host identity changed. Reconnect this machine before continuing.",
             );
           if (disposed) return;
+          cachedDescriptors.set(machine.id, host);
           setDescriptor(host);
           described = true;
         }
@@ -276,6 +304,8 @@ function ConnectedRemoteSession({
         // A catalog request that failed while offline is retried on recovery.
         if (failed) setCatalogRefresh((value) => value + 1);
         failed = 0;
+        if (next && sessionId)
+          rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next);
         setSnapshot(next);
         active = !!next?.session.busy;
       } catch (reason) {
@@ -319,6 +349,7 @@ function ConnectedRemoteSession({
     })
       .then((value) => {
         if (disposed) return;
+        cachedCatalogs.set(catalogKey(machine.id, project.projectId), value);
         setCatalog(value);
         setCatalogError("");
       })
@@ -335,21 +366,42 @@ function ConnectedRemoteSession({
     catalogRefresh,
   ]);
 
-  const loadBranches = useCallback(() => {
+  useEffect(() => {
+    if (!online) return;
+    let cancelled = false;
+    if (branchCwd.current !== executionCwd) {
+      branchCwd.current = executionCwd;
+      setBranches(
+        cachedBranches.get(
+          branchKey(machine.id, project.projectId, executionCwd),
+        ),
+      );
+    }
+    setBranchesLoading(true);
+    setBranchError("");
     void remoteRequest<HostBranches>(machine.id, "git.branches", {
       projectId: project.projectId,
       cwd: executionCwd,
     })
       .then((value) => {
-        if (alive.current) setBranches(value);
+        if (!cancelled) {
+          cachedBranches.set(
+            branchKey(machine.id, project.projectId, executionCwd),
+            value,
+          );
+          setBranches(value);
+        }
       })
-      .catch(() => {
-        if (alive.current) setBranches(undefined);
+      .catch((reason) => {
+        if (!cancelled) setBranchError(String(reason).replace(/^Error: /, ""));
+      })
+      .finally(() => {
+        if (!cancelled) setBranchesLoading(false);
       });
-  }, [machine.id, project.projectId, executionCwd]);
-  useEffect(() => {
-    if (online) loadBranches();
-  }, [online, loadBranches]);
+    return () => {
+      cancelled = true;
+    };
+  }, [online, machine.id, project.projectId, executionCwd, branchRefresh]);
 
   const providers = useMemo(
     () => (descriptor?.providers ?? []).filter(isRemoteProvider),
@@ -736,6 +788,8 @@ function ConnectedRemoteSession({
       cwd={executionCwd}
       online={online}
       branches={branches}
+      branchesLoading={branchesLoading}
+      branchError={branchError}
       switching={switchingBranch}
       busy={busy || (!!sessionId && !hostSession)}
       onSelectWorktree={async (tree) => {
@@ -743,7 +797,6 @@ function ConnectedRemoteSession({
         if (!hostSession) {
           rememberRemotePendingWorktree(shell.id, tree.path);
           setSelectedCwd(tree.path);
-          setBranches(undefined);
           return;
         }
         if (!onOpenWorktree)
@@ -765,17 +818,23 @@ function ConnectedRemoteSession({
           remote,
         })
           .then((value) => {
-            if (alive.current) setBranches(value);
+            if (alive.current) {
+              cachedBranches.set(
+                branchKey(machine.id, project.projectId, executionCwd),
+                value,
+              );
+              setBranches(value);
+            }
           })
           .catch((reason) => {
             if (alive.current) setError(String(reason));
           })
           .finally(() => {
             if (alive.current) setSwitchingBranch(false);
-            loadBranches();
+            setBranchRefresh((value) => value + 1);
           });
       }}
-      onViewChanges={() => void inspect("git.diff")}
+      onReloadBranches={() => setBranchRefresh((value) => value + 1)}
     />
   );
 
@@ -934,17 +993,21 @@ function RemoteHostBar({
   cwd,
   online,
   branches,
+  branchesLoading,
+  branchError,
   switching,
   busy,
   onSelectWorktree,
   onBranchAction,
-  onViewChanges,
+  onReloadBranches,
 }: {
   machine: RemoteMachine;
   project: RemoteProject;
   cwd: string;
   online: boolean;
   branches?: HostBranches;
+  branchesLoading: boolean;
+  branchError: string;
   switching: boolean;
   busy: boolean;
   onSelectWorktree: (tree: HostWorktree) => Promise<void>;
@@ -953,18 +1016,27 @@ function RemoteHostBar({
     branch: string,
     remote?: string,
   ) => void;
-  onViewChanges: () => void;
+  onReloadBranches: () => void;
 }) {
   const anchor = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const canSwitch =
-    online &&
-    !busy &&
-    !switching &&
-    !!(branches?.branches.length || branches?.remotes?.length);
+  const canSwitch = online && !busy && !switching;
+  const branchLabel = switching
+    ? "Switching…"
+    : branchError
+      ? /not a git repository/i.test(branchError)
+        ? "No repo"
+        : "Branch unavailable"
+      : branches?.current
+        ? branches.current
+        : branches
+          ? "Detached"
+          : branchesLoading
+            ? "Loading…"
+            : "Branch";
   const filtered = [
     ...(branches?.branches.map((name) => ({
       name,
@@ -979,7 +1051,7 @@ function RemoteHostBar({
   return (
     <>
       <span
-        className="flex min-w-0 items-center gap-1.5 text-content/50"
+        className="flex min-w-0 max-w-44 shrink items-center gap-1.5 text-content/50"
         title={`${machine.name} · ${project.cwd}`}
       >
         <span className="relative shrink-0">
@@ -1003,150 +1075,159 @@ function RemoteHostBar({
         busy={busy}
         onSelect={onSelectWorktree}
       />
-      {branches ? (
-        <div ref={anchor} className="relative flex min-w-0 shrink">
-          <GitPickerTrigger
-            title={
-              busy
-                ? "Wait for the turn to finish to switch branches"
-                : "Switch the host checkout’s branch"
-            }
-            aria-label={`Host branch ${branches.current ?? "Detached"}`}
-            aria-expanded={open}
-            aria-haspopup="dialog"
-            disabled={!canSwitch}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              setOpen((value) => !value);
-              setCreating(false);
-              setQuery("");
-            }}
-            label={switching ? "Switching…" : (branches.current ?? "Detached")}
-          />
-          {open ? (
-            <Popover
-              anchor={anchor}
-              side="top"
-              align="start"
-              width={240}
-              maxHeight={280}
-              constrainHeight
-              onDismiss={() => setOpen(false)}
-              role="dialog"
-              aria-label="Host branches"
-              className="flex flex-col overflow-hidden"
-            >
-              {creating ? (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!name.trim()) return;
-                    setOpen(false);
-                    onBranchAction("git.createBranch", name.trim());
-                  }}
-                  className="flex flex-col gap-2 p-3 text-[12px]"
+      <div ref={anchor} className="relative flex min-w-0 shrink-0">
+        <GitPickerTrigger
+          title={
+            busy
+              ? "Wait for the turn to finish to switch branches"
+              : branchError || "Choose a branch on the host"
+          }
+          aria-label={`Host branch ${branchLabel}`}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          disabled={!canSwitch}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setOpen((value) => !value);
+            setCreating(false);
+            setQuery("");
+          }}
+          label={branchLabel}
+        />
+        {open ? (
+          <Popover
+            anchor={anchor}
+            side="top"
+            align="start"
+            width={240}
+            maxHeight={280}
+            constrainHeight
+            onDismiss={() => setOpen(false)}
+            role="dialog"
+            aria-label="Host branches"
+            className="flex flex-col overflow-hidden"
+          >
+            {branchesLoading && !branches ? (
+              <p className="p-3 text-[12px] text-content/50">
+                Loading branches…
+              </p>
+            ) : branchError || !branches ? (
+              <div className="flex flex-col gap-2 p-3 text-[12px]">
+                <p
+                  role={branchError ? "alert" : "status"}
+                  className="text-content/60"
                 >
-                  <label htmlFor="remote-new-branch">New branch name</label>
+                  {branchError || "Branch information is unavailable."}
+                </p>
+                <button
+                  type="button"
+                  onClick={onReloadBranches}
+                  className="self-start rounded-md px-2 py-1 text-content/75 hover:bg-content/8"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : creating ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!name.trim()) return;
+                  setOpen(false);
+                  onBranchAction("git.createBranch", name.trim());
+                }}
+                className="flex flex-col gap-2 p-3 text-[12px]"
+              >
+                <label htmlFor="remote-new-branch">New branch name</label>
+                <input
+                  id="remote-new-branch"
+                  aria-label="New remote branch"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="feature/my-task"
+                  className="rounded-md border border-content/10 bg-background-base p-2 outline-none"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCreating(false)}
+                    className="rounded-md px-2 py-1 hover:bg-content/8"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!name.trim()}
+                    className="rounded-md bg-content px-2 py-1 text-background-base disabled:opacity-40"
+                  >
+                    Create branch
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <label className="flex items-center gap-2 border-b border-stroke px-3 py-2">
+                  <Search className="size-3.5 text-content/40" />
                   <input
-                    id="remote-new-branch"
-                    aria-label="New remote branch"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="feature/my-task"
-                    className="rounded-md border border-content/10 bg-background-base p-2 outline-none"
+                    aria-label="Search host branches"
+                    placeholder="Search branches…"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
                   />
-                  <div className="flex justify-end gap-2">
+                </label>
+                <div className="min-h-0 overflow-y-auto p-1">
+                  {filtered.map((branch) => (
                     <button
+                      key={`${branch.remote ?? "local"}:${branch.name}`}
                       type="button"
-                      onClick={() => setCreating(false)}
-                      className="rounded-md px-2 py-1 hover:bg-content/8"
-                    >
-                      Back
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={!name.trim()}
-                      className="rounded-md bg-content px-2 py-1 text-background-base disabled:opacity-40"
-                    >
-                      Create branch
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <>
-                  <label className="flex items-center gap-2 border-b border-stroke px-3 py-2">
-                    <Search className="size-3.5 text-content/40" />
-                    <input
-                      aria-label="Search host branches"
-                      placeholder="Search branches…"
-                      value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      className="min-w-0 flex-1 bg-transparent text-[12px] outline-none"
-                    />
-                  </label>
-                  <div className="min-h-0 overflow-y-auto p-1">
-                    {filtered.map((branch) => (
-                      <button
-                        key={`${branch.remote ?? "local"}:${branch.name}`}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={
-                          !branch.remote && branch.name === branches.current
-                        }
-                        className="flex h-7.5 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
-                        onClick={() => {
-                          setOpen(false);
-                          if (branch.remote || branch.name !== branches.current)
-                            onBranchAction(
-                              "git.switch",
-                              branch.name,
-                              branch.remote ?? undefined,
-                            );
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 truncate">
-                          {branch.remote ? `${branch.remote}/` : ""}
-                          {branch.name}
-                        </span>
-                        {!branch.remote && branch.name === branches.current ? (
-                          <Check className="size-3.5 shrink-0 text-content/55" />
-                        ) : null}
-                      </button>
-                    ))}
-                    {!filtered.length ? (
-                      <p className="p-2 text-[12px] text-content/50">
-                        No matching branches
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="border-t border-stroke p-1">
-                    <button
-                      type="button"
+                      role="menuitemradio"
+                      aria-checked={
+                        !branch.remote && branch.name === branches.current
+                      }
+                      className="flex h-7.5 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content/75 hover:bg-content/8 hover:text-content"
                       onClick={() => {
-                        setCreating(true);
-                        setName(query);
+                        setOpen(false);
+                        if (branch.remote || branch.name !== branches.current)
+                          onBranchAction(
+                            "git.switch",
+                            branch.name,
+                            branch.remote ?? undefined,
+                          );
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] hover:bg-content/8"
                     >
-                      <Plus className="size-3.5" />
-                      Create branch…
+                      <span className="min-w-0 flex-1 truncate">
+                        {branch.remote ? `${branch.remote}/` : ""}
+                        {branch.name}
+                      </span>
+                      {!branch.remote && branch.name === branches.current ? (
+                        <Check className="size-3.5 shrink-0 text-content/55" />
+                      ) : null}
                     </button>
-                  </div>
-                </>
-              )}
-            </Popover>
-          ) : null}
-        </div>
-      ) : null}
-      <button
-        type="button"
-        disabled={!online}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={onViewChanges}
-        className="-ml-1 flex h-6 shrink-0 items-center rounded-md px-1.5 text-[12px] text-content/50 hover:bg-content/8 hover:text-content disabled:opacity-40"
-      >
-        Changes
-      </button>
+                  ))}
+                  {!filtered.length ? (
+                    <p className="p-2 text-[12px] text-content/50">
+                      No matching branches
+                    </p>
+                  ) : null}
+                </div>
+                <div className="border-t border-stroke p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreating(true);
+                      setName(query);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[12px] hover:bg-content/8"
+                  >
+                    <Plus className="size-3.5" />
+                    Create branch…
+                  </button>
+                </div>
+              </>
+            )}
+          </Popover>
+        ) : null}
+      </div>
     </>
   );
 }

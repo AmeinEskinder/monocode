@@ -17,7 +17,7 @@ import { MOD } from "../../../platform/tauri/platform";
 import type {
   GitChangedFile,
   GitDiffIndex,
-  GitFileDiff,
+  GitFileDiffKind,
 } from "../../../platform/tauri/fs";
 import {
   loadChangesView,
@@ -29,13 +29,10 @@ import {
   FileSection,
 } from "../../source-control/ui/GitChangesPanel";
 import { remoteRequest } from "../model/connections";
+import type { RemoteFileTarget } from "../model/remoteFiles";
 import type { RemoteProject } from "../model/remoteProjects";
 import type { RemoteMachine } from "../model/protocol";
 import { RemoteHostError } from "./RemoteHostError";
-import {
-  RemoteWorkspacePreview,
-  type RemotePreview,
-} from "./RemoteWorkspacePreview";
 
 export function RemoteChanges({
   project,
@@ -44,6 +41,9 @@ export function RemoteChanges({
   index,
   error: loadError,
   refresh,
+  selectedPath,
+  selectedKind,
+  onOpenFile,
 }: {
   project?: RemoteProject;
   machine?: RemoteMachine;
@@ -51,11 +51,13 @@ export function RemoteChanges({
   index: GitDiffIndex | null;
   error: string;
   refresh: () => void;
+  selectedPath?: string;
+  selectedKind?: GitFileDiffKind;
+  onOpenFile?: (target: RemoteFileTarget) => void;
 }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<RemotePreview>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [stagedOpen, setStagedOpen] = useState(true);
   const [changesOpen, setChangesOpen] = useState(true);
@@ -65,6 +67,17 @@ export function RemoteChanges({
   const staged = index?.files.filter((file) => file.staged) ?? [];
   const changes = index?.files.filter((file) => file.unstaged) ?? [];
   const canCommit = !!staged.length && !!message.trim() && !busy;
+  const showCreatePr =
+    !!index?.remote &&
+    !!index.branch &&
+    !!index.defaultBranch &&
+    index.branch !== index.defaultBranch;
+  const diverged = (index?.ahead ?? 0) > 0 && (index?.behind ?? 0) > 0;
+  const canCreatePr =
+    showCreatePr &&
+    !index?.files.length &&
+    (index?.aheadOfDefault ?? 0) > 0 &&
+    (index?.behind ?? 0) === 0;
 
   useEffect(() => {
     const el = messageRef.current;
@@ -92,7 +105,7 @@ export function RemoteChanges({
     });
   };
   const run = async (name: string, path?: string) => {
-    if (busy) return;
+    if (busy || (name === "createPr" && !canCreatePr)) return;
     setBusy(path ?? name);
     setError("");
     try {
@@ -106,7 +119,7 @@ export function RemoteChanges({
     }
   };
   const commit = async (push = false, pr = false) => {
-    if (!canCommit) return;
+    if (!canCommit || (pr && (!showCreatePr || diverged))) return;
     setBusy("commit");
     setMenuOpen(false);
     setError("");
@@ -141,32 +154,21 @@ export function RemoteChanges({
       return;
     await run(file ? "discard" : "discardAll", file?.relative);
   };
-  const open = async (path: string, kind: "staged" | "unstaged") => {
-    if (!project || !machine) return;
-    setError("");
-    try {
-      const diff = await remoteRequest<GitFileDiff>(
-        machine.id,
-        "git.fileDiff",
-        {
-          projectId: project.projectId,
-          cwd,
-          path,
-          staged: kind === "staged",
-        },
-      );
-      setPreview({
-        title: path,
-        original: diff.binary || diff.tooLarge ? undefined : diff.original,
-        current: diff.binary
-          ? "Binary file cannot be previewed"
-          : diff.tooLarge
-            ? "File is too large to preview"
-            : diff.current,
-      });
-    } catch (reason) {
-      setError(String(reason).replace(/^Error: /, ""));
-    }
+  const open = (path: string, kind: GitFileDiffKind, pin?: boolean) => {
+    if (!project || !machine || !onOpenFile) return;
+    const relativePath = index?.files.find(
+      (file) => file.path === path,
+    )?.relative;
+    if (!relativePath) return;
+    onOpenFile({
+      machineId: machine.id,
+      projectId: project.projectId,
+      projectKey: project.key,
+      cwd: cwd ?? project.cwd,
+      relativePath,
+      changeKind: kind,
+      pin,
+    });
   };
   const toggleView = () => {
     const next = view === "list" ? "tree" : "list";
@@ -257,7 +259,7 @@ export function RemoteChanges({
               <button
                 type="button"
                 role="menuitem"
-                disabled={!canCommit || !index?.remote}
+                disabled={!canCommit || !index?.remote || diverged}
                 onClick={() => void commit(true)}
                 className="flex h-7 w-full items-center px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
               >
@@ -266,7 +268,7 @@ export function RemoteChanges({
               <button
                 type="button"
                 role="menuitem"
-                disabled={!canCommit || !index?.remote}
+                disabled={!canCommit || !showCreatePr || diverged}
                 onClick={() => void commit(true, true)}
                 className="flex h-7 w-full items-center px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
               >
@@ -292,21 +294,17 @@ export function RemoteChanges({
                 {index.upstream ? "Push Changes" : "Publish Branch"}
               </button>
             ) : null}
-            <button
-              type="button"
-              disabled={
-                !!busy ||
-                !!index.files.length ||
-                !index.defaultBranch ||
-                index.branch === index.defaultBranch ||
-                index.aheadOfDefault === 0
-              }
-              onClick={() => void run("createPr")}
-              className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-content/10 px-2 text-[12px] font-medium text-content hover:bg-content/15 disabled:opacity-40"
-            >
-              <GitPullRequest className="size-3.5" strokeWidth={1.75} />
-              Create PR
-            </button>
+            {showCreatePr ? (
+              <button
+                type="button"
+                disabled={!canCreatePr || !!busy}
+                onClick={() => void run("createPr")}
+                className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-content/10 px-2 text-[12px] font-medium text-content hover:bg-content/15 disabled:opacity-40"
+              >
+                <GitPullRequest className="size-3.5" strokeWidth={1.75} />
+                Create PR
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -352,8 +350,10 @@ export function RemoteChanges({
               files={staged}
               view={view}
               kind="staged"
+              selected={selectedPath}
+              selectedKind={selectedKind}
               busy={busy}
-              onOpenFile={(path) => void open(path, "staged")}
+              onOpenFile={open}
               onAction={(file, action) => void run(action, file.relative)}
             />
           </FileSection>
@@ -383,8 +383,10 @@ export function RemoteChanges({
               files={changes}
               view={view}
               kind="unstaged"
+              selected={selectedPath}
+              selectedKind={selectedKind}
               busy={busy}
-              onOpenFile={(path) => void open(path, "unstaged")}
+              onOpenFile={open}
               onAction={(file, action) =>
                 action === "discard"
                   ? void discard(file)
@@ -394,12 +396,6 @@ export function RemoteChanges({
           </FileSection>
         ) : null}
       </div>
-      {preview ? (
-        <RemoteWorkspacePreview
-          preview={preview}
-          onClose={() => setPreview(undefined)}
-        />
-      ) : null}
     </div>
   );
 }

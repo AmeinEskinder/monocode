@@ -1,7 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import {
   lstat,
+  mkdir,
+  open,
   readFile,
   readdir,
   realpath,
@@ -15,6 +17,10 @@ import type {
   GitDiffIndex,
   GitFileDiff,
 } from "../src/platform/tauri/fs";
+import type {
+  ProjectSearchMatch,
+  ProjectSearchResult,
+} from "../src/features/search/model/search";
 
 const exec = promisify(execFile);
 const MAX_FILE = 1024 * 1024;
@@ -63,6 +69,40 @@ async function git(root: string, args: string[], maxBuffer = 4 * 1024 * 1024) {
       encoding: "utf8",
     })
   ).stdout;
+}
+
+function gitWithInput(
+  root: string,
+  args: string[],
+  input: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["-c", "core.pager=cat", ...args], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const timer = setTimeout(() => child.kill(), 10_000);
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.stdin.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"));
+      else
+        reject(
+          new Error(
+            Buffer.concat(stderr).toString("utf8") || `git exited ${code}`,
+          ),
+        );
+    });
+    child.stdin.end(input);
+  });
 }
 
 export type HostFileEntry = {
@@ -170,6 +210,204 @@ export async function searchHostFiles(
     }));
 }
 
+type ContentSearchOptions = {
+  query: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+  include: string[];
+  exclude: string[];
+};
+
+function searchOptions(input: unknown): ContentSearchOptions {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid search");
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.query !== "string" ||
+    value.query.length > 200 ||
+    value.query.includes("\0") ||
+    [value.include, value.exclude].some(
+      (item) =>
+        item !== undefined &&
+        (typeof item !== "string" || item.length > 1000 || item.includes("\0")),
+    )
+  )
+    throw new Error("Invalid search");
+  for (const key of ["caseSensitive", "wholeWord", "regex"])
+    if (value[key] !== undefined && typeof value[key] !== "boolean")
+      throw new Error("Invalid search");
+  const tokens = (item: unknown) =>
+    (typeof item === "string" ? item : "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  return {
+    query: value.query.trim(),
+    caseSensitive: value.caseSensitive === true,
+    wholeWord: value.wholeWord === true,
+    regex: value.regex === true,
+    include: tokens(value.include),
+    exclude: tokens(value.exclude),
+  };
+}
+
+function searchColumn(line: string, options: ContentSearchOptions): number {
+  if (options.regex) return 1;
+  const pattern = new RegExp(
+    options.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    options.caseSensitive ? "g" : "gi",
+  );
+  for (const match of line.matchAll(pattern)) {
+    if (options.wholeWord) {
+      const before = line[match.index - 1];
+      const after = line[match.index + match[0].length];
+      if (
+        (before && /[\p{L}\p{N}_]/u.test(before)) ||
+        (after && /[\p{L}\p{N}_]/u.test(after))
+      )
+        continue;
+    }
+    return match.index + 1;
+  }
+  return 0;
+}
+
+/** Search file contents with the same controls and result shape as local search. */
+export async function searchHostContent(
+  root: string,
+  input: unknown,
+): Promise<ProjectSearchResult> {
+  const options = searchOptions(input);
+  if (!options.query) return { matches: [], truncated: false };
+  const args = ["grep", "-z", "-n"];
+  if (!options.caseSensitive) args.push("-i");
+  if (options.wholeWord) args.push("-w");
+  args.push(options.regex ? "-E" : "-F", "-e", options.query, "--");
+  args.push(
+    ...options.include,
+    ...options.exclude.map((glob) => `:(exclude)${glob}`),
+  );
+  try {
+    const output = await git(root, args, 8 * 1024 * 1024);
+    const matches: ProjectSearchMatch[] = [];
+    let offset = 0;
+    while (offset < output.length && matches.length < 501) {
+      const pathEnd = output.indexOf("\0", offset);
+      const lineEnd = output.indexOf("\0", pathEnd + 1);
+      const previewEnd = output.indexOf("\n", lineEnd + 1);
+      if (pathEnd < 0 || lineEnd < 0) break;
+      const relative = output.slice(offset, pathEnd).replace(/\\/g, "/");
+      const preview = output.slice(
+        lineEnd + 1,
+        previewEnd < 0 ? undefined : previewEnd,
+      );
+      offset = previewEnd < 0 ? output.length : previewEnd + 1;
+      if (
+        !relative ||
+        !Number.isFinite(Number(output.slice(pathEnd + 1, lineEnd)))
+      )
+        continue;
+      const path = workspacePath(root, relative);
+      matches.push({
+        path: path.split(sep).join("/"),
+        relative,
+        line: Number(output.slice(pathEnd + 1, lineEnd)),
+        column: searchColumn(preview, options) || 1,
+        preview,
+      });
+    }
+    return { matches: matches.slice(0, 500), truncated: matches.length > 500 };
+  } catch (reason) {
+    const code = (reason as { code?: number | string }).code;
+    if (code === 1 || code === "1") return { matches: [], truncated: false };
+    if (
+      !/not a git repository|not in a git directory|maxBuffer/i.test(
+        String(reason),
+      )
+    )
+      throw reason;
+  }
+
+  // Ordinary folders use a bounded text scan, like the local fallback.
+  if (options.regex) return { matches: [], truncated: false };
+  const matches: ProjectSearchMatch[] = [];
+  const pending = [""];
+  let files = 0;
+  let truncated = false;
+  while (pending.length && matches.length <= 500 && files < 5000) {
+    const parent = pending.pop()!;
+    const entries = await readdir(resolve(root, parent), {
+      withFileTypes: true,
+    }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const relative = parent ? `${parent}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        pending.push(relative);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      files++;
+      if (files > 5000) {
+        truncated = true;
+        break;
+      }
+      if (!matchesFilters(relative, options)) continue;
+      let content: string;
+      let path: string;
+      try {
+        path = await existingPath(root, relative);
+        if ((await stat(path)).size > 512 * 1024) continue;
+        content = await readHostFile(root, relative);
+      } catch {
+        continue;
+      }
+      for (const [index, line] of content.split(/\r?\n/).entries()) {
+        const column = searchColumn(line, options);
+        if (!column) continue;
+        matches.push({
+          path: path.split(sep).join("/"),
+          relative,
+          line: index + 1,
+          column,
+          preview: line,
+        });
+        if (matches.length > 500) {
+          truncated = true;
+          break;
+        }
+      }
+      if (matches.length > 500) break;
+    }
+  }
+  if (files >= 5000 && pending.length) truncated = true;
+  return { matches: matches.slice(0, 500), truncated };
+}
+
+function matchesFilters(path: string, options: ContentSearchOptions): boolean {
+  const matches = (glob: string) => {
+    const normalized = glob.replace(/^\.\//, "");
+    if (!/[?*]/.test(normalized))
+      return path === normalized || path.startsWith(`${normalized}/`);
+    const pattern = normalized
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*/g, "\u0000")
+      .replace(/\*/g, "[^/]*")
+      .replace(/\?/g, "[^/]")
+      .replace(/\u0000/g, ".*");
+    const regex = new RegExp(`^${pattern}$`);
+    return (
+      regex.test(path) ||
+      (!normalized.includes("/") && regex.test(path.split("/").pop()!))
+    );
+  };
+  return (
+    (!options.include.length || options.include.some(matches)) &&
+    !options.exclude.some(matches)
+  );
+}
+
 export async function readHostFile(
   root: string,
   input: unknown,
@@ -201,6 +439,63 @@ export async function writeHostFile(
   if (current !== expected)
     throw new Error("File changed on the host; reload before saving");
   await writeFile(path, content, "utf8");
+}
+
+/** Create a new file or folder under an existing workspace directory. */
+export async function createHostPath(
+  root: string,
+  parent: unknown,
+  name: unknown,
+  isDir: unknown,
+): Promise<string> {
+  if (
+    typeof name !== "string" ||
+    typeof isDir !== "boolean" ||
+    !name ||
+    name.length > 4096 ||
+    name.includes("\0") ||
+    /^[\\/]/.test(name)
+  )
+    throw new Error("Invalid file name");
+  const parts = name.replace(/[\\/]+$/, "").split(/[\\/]/);
+  if (
+    !parts.length ||
+    parts.some(
+      (part) =>
+        !part ||
+        part === "." ||
+        part === ".." ||
+        part.toLowerCase() === ".git" ||
+        part.length > 255 ||
+        /^\s+$/.test(part),
+    )
+  )
+    throw new Error("Invalid file name");
+  let directory = await existingPath(root, parent, true);
+  if (!(await stat(directory)).isDirectory())
+    throw new Error("Path is not a directory");
+  for (const part of parts.slice(0, -1)) {
+    const candidate = workspacePath(
+      root,
+      relative(root, resolve(directory, part)),
+    );
+    await mkdir(candidate).catch((reason: NodeJS.ErrnoException) => {
+      if (reason.code !== "EEXIST") throw reason;
+    });
+    directory = await existingPath(root, relative(root, candidate));
+    if (!(await stat(directory)).isDirectory())
+      throw new Error("Path is not a directory");
+  }
+  const path = workspacePath(
+    root,
+    relative(root, resolve(directory, parts.at(-1)!)),
+  );
+  if (isDir) await mkdir(path);
+  else {
+    const file = await open(path, "wx");
+    await file.close();
+  }
+  return relative(root, path).split(sep).join("/");
 }
 
 function statusName(code: string): string {
@@ -420,6 +715,7 @@ export async function hostGitAction(
   action: unknown,
   input?: unknown,
   message?: unknown,
+  contents?: unknown,
 ) {
   const discard = async (file: GitChangedFile) => {
     const path = relative(root, workspacePath(root, file.relative));
@@ -427,6 +723,32 @@ export async function hostGitAction(
     else await git(root, ["restore", "--worktree", "--", path]);
   };
   switch (action) {
+    case "stageContents": {
+      const path = relative(root, workspacePath(root, input));
+      if (
+        typeof contents !== "string" ||
+        Buffer.byteLength(contents) > MAX_FILE
+      )
+        throw new Error("File too large or invalid");
+      const hash = (
+        await gitWithInput(
+          root,
+          ["hash-object", "-w", "--path", path, "--stdin"],
+          contents,
+        )
+      ).trim();
+      const staged = await git(root, ["ls-files", "--stage", "--", path]);
+      const mode = staged.match(/^([0-7]{6})\s/)?.[1] ?? "100644";
+      await git(root, [
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        mode,
+        hash,
+        path,
+      ]);
+      return;
+    }
     case "stage":
     case "unstage": {
       const path = relative(root, workspacePath(root, input));

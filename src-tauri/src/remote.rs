@@ -309,6 +309,8 @@ pub fn remote_request(
             | "files.read"
             | "files.list"
             | "files.search"
+            | "files.searchContent"
+            | "files.create"
             | "files.write"
             | "git.index"
             | "git.fileDiff"
@@ -492,7 +494,11 @@ fn start_ssh_job(
                         entries.iter().any(|entry| entry.as_str() == Some(name))
                     })
                 };
-                if !supports("git.index") || !supports("files.list") {
+                if !supports("git.index")
+                    || !supports("files.list")
+                    || !supports("files.create")
+                    || !supports("files.searchContent")
+                {
                     return Err("The installed host package still lacks Explorer and Changes. Install a newer MonoCode release with updated host packages.".into());
                 }
             }

@@ -14,6 +14,8 @@ import { remoteProjectFor } from "./remoteProjects";
 
 const CHANGE = "monocode:remote-machines";
 const HISTORY_CHANGE = "monocode:remote-history";
+let cachedMachines: RemoteMachine[] = [];
+let machinesLoaded = false;
 export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
 export const OPEN_REMOTE_PROJECT_EVENT = "monocode:open-remote-project";
 export const refreshRemoteMachines = () =>
@@ -180,12 +182,18 @@ export async function connectMachine(
     url,
     token,
   });
+  cachedMachines = [
+    ...cachedMachines.filter((entry) => entry.id !== machine.id),
+    machine,
+  ];
+  machinesLoaded = true;
   window.dispatchEvent(new Event(CHANGE));
   return machine;
 }
 
 export async function disconnectMachine(machineId: string): Promise<void> {
   await invoke("remote_disconnect", { machineId });
+  cachedMachines = cachedMachines.filter((entry) => entry.id !== machineId);
   window.dispatchEvent(new Event(CHANGE));
 }
 
@@ -196,21 +204,26 @@ export function useRemoteMachines(enabled = true): {
   const [state, setState] = useState<{
     machines: RemoteMachine[];
     loaded: boolean;
-  }>({ machines: [], loaded: false });
+  }>({ machines: cachedMachines, loaded: machinesLoaded });
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
     const refresh = () => {
       void invoke<RemoteMachine[]>("remote_machines")
         .then((value) => {
-          if (!disposed)
+          if (!disposed) {
+            cachedMachines = Array.isArray(value) ? value : [];
+            machinesLoaded = true;
             setState({
-              machines: Array.isArray(value) ? value : [],
+              machines: cachedMachines,
               loaded: true,
             });
+          }
         })
         .catch(() => {
-          if (!disposed) setState({ machines: [], loaded: true });
+          // A temporary connection failure should not blank every remote
+          // panel while a fresh machine list is requested.
+          if (!disposed) setState({ machines: cachedMachines, loaded: true });
         });
     };
     refresh();

@@ -565,7 +565,6 @@ function sanitizeFile(raw: unknown): FilePaneTab | null {
       releaseNotes ||
       commit ||
       sessionChanges ||
-      value.review === true ||
       value.terminal === true)
   )
     return null;
