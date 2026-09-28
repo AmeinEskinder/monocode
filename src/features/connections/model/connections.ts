@@ -8,6 +8,8 @@ import {
   type HostSessionSummary,
   type RemoteMachine,
   type SessionSync,
+  type SessionSyncChunk,
+  type SessionSyncResponse,
 } from "./protocol";
 
 const CHANGE = "monocode:remote-machines";
@@ -17,7 +19,29 @@ export const refreshRemoteMachines = () =>
   window.dispatchEvent(new Event(CHANGE));
 const KEY = "monocode.remote-projects.v1";
 const TAB_KEY = "monocode.remote-tabs.v1";
-export type RemoteTabSelection = { machineId: string; sessionId?: string };
+/** Removing and re-adding a machine gives it a new local ID, so selections
+ * also keep the host's stable identity to find it again. */
+type MachineRef = Pick<RemoteMachine, "id" | "environmentId">;
+export type RemoteTabSelection = {
+  machineId: string;
+  environmentId?: string;
+  sessionId?: string;
+};
+export type RememberedMachine = { machineId: string; environmentId?: string };
+export function findMachine<T extends MachineRef>(
+  machines: readonly T[],
+  selection?: { machineId: string; environmentId?: string },
+): T | undefined {
+  if (!selection) return undefined;
+  return (
+    machines.find((machine) => machine.id === selection.machineId) ??
+    (selection.environmentId
+      ? machines.find(
+          (machine) => machine.environmentId === selection.environmentId,
+        )
+      : undefined)
+  );
+}
 export function remoteTabFor(shellId: string): RemoteTabSelection | undefined {
   try {
     const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
@@ -28,12 +52,17 @@ export function remoteTabFor(shellId: string): RemoteTabSelection | undefined {
 }
 export function rememberRemoteTab(
   shellId: string,
-  machineId?: string,
+  machine?: MachineRef,
   sessionId?: string,
 ) {
   try {
     const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
-    if (machineId) all[shellId] = { machineId, sessionId };
+    if (machine)
+      all[shellId] = {
+        machineId: machine.id,
+        environmentId: machine.environmentId,
+        sessionId,
+      };
     else delete all[shellId];
     localStorage.setItem(TAB_KEY, JSON.stringify(all));
   } catch {
@@ -42,6 +71,7 @@ export function rememberRemoteTab(
 }
 type ProjectConnections = {
   machineId?: string;
+  machineEnvironment?: string;
   workspaces?: Record<string, HostProject>;
   sessions?: Record<string, string>;
   drafts?: Record<string, string>;
@@ -64,10 +94,19 @@ function update(project: string, patch: Partial<ProjectConnections>) {
   }
 }
 
-export const rememberedMachine = (project: string): string | undefined =>
-  read(project).machineId;
-export const rememberMachine = (project: string, machineId?: string) =>
-  update(project, { machineId });
+export const rememberedMachine = (
+  project: string,
+): RememberedMachine | undefined => {
+  const { machineId, machineEnvironment } = read(project);
+  return machineId
+    ? { machineId, environmentId: machineEnvironment }
+    : undefined;
+};
+export const rememberMachine = (project: string, machine?: MachineRef) =>
+  update(project, {
+    machineId: machine?.id,
+    machineEnvironment: machine?.environmentId,
+  });
 export const workspaceFor = (
   project: string,
   environment: string,
@@ -161,6 +200,35 @@ export function remoteRequest<T>(
   return invoke<T>("remote_request", { machineId, method, params });
 }
 
+/** Reads one sync, assembling it from bounded pieces when the host chunks it. */
+async function syncRemoteSession(
+  machineId: string,
+  sessionId: string,
+  revision?: number,
+): Promise<SessionSync> {
+  const response = await remoteRequest<SessionSyncResponse>(
+    machineId,
+    "sessions.sync",
+    { sessionId, revision },
+  );
+  if (response.kind !== "chunked") return response;
+  const pieces: string[] = [];
+  let offset = 0;
+  while (offset < response.length) {
+    const { data } = await remoteRequest<SessionSyncChunk>(
+      machineId,
+      "sessions.syncChunk",
+      { sessionId, transfer: response.transfer, offset },
+    );
+    if (!data) throw new Error("Session transfer ended early");
+    pieces.push(data);
+    offset += data.length;
+  }
+  if (offset !== response.length)
+    throw new Error("Session transfer has an unexpected length");
+  return JSON.parse(pieces.join("")) as SessionSync;
+}
+
 /** Fetches only what changed since `known`; falls back to a full snapshot. */
 export async function loadRemoteSession(
   machineId: string,
@@ -168,10 +236,7 @@ export async function loadRemoteSession(
   known?: HostSession,
 ): Promise<HostSession> {
   const sync = (revision?: number) =>
-    remoteRequest<SessionSync>(machineId, "sessions.sync", {
-      sessionId,
-      revision,
-    });
+    syncRemoteSession(machineId, sessionId, revision);
   const update = await sync(known?.revision);
   try {
     return applySessionSync(known, update);

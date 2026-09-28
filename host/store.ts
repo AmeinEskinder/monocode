@@ -222,6 +222,25 @@ export class HostStore {
     return { id, token };
   }
 
+  revokeDevice(id: string): boolean {
+    return (
+      Number(
+        this.db.prepare("DELETE FROM devices WHERE id=?").run(id).changes,
+      ) > 0
+    );
+  }
+
+  /** Lets a desktop revoke only the credential it is using. */
+  revokeToken(token: string): boolean {
+    return (
+      Number(
+        this.db
+          .prepare("DELETE FROM devices WHERE hash=?")
+          .run(this.hash(token)).changes,
+      ) > 0
+    );
+  }
+
   authenticated(token: string): boolean {
     return !!this.db
       .prepare("SELECT id FROM devices WHERE hash=?")

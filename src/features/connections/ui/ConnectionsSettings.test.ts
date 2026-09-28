@@ -156,7 +156,7 @@ it("keeps the SSH address after a failed install and cancels active setup when S
   expect(invoke).toHaveBeenCalledWith("remote_ssh_cancel", { jobId: "setup" });
 });
 
-it("removes the saved connection without issuing a remote stop", async () => {
+async function openRemove() {
   machines = [machine];
   await render();
   await act(async () =>
@@ -164,9 +164,33 @@ it("removes the saved connection without issuing a remote stop", async () => {
       .querySelector<HTMLButtonElement>('[aria-label="Remove Home Mac"]')!
       .click(),
   );
+}
+const requested = (method: string) =>
+  vi
+    .mocked(invoke)
+    .mock.calls.some(
+      ([command, params]) =>
+        command === "remote_request" &&
+        (params as { method: string }).method === method,
+    );
+
+it("explains removal and removes the saved connection without stopping or revoking", async () => {
+  await openRemove();
+  expect(invoke).not.toHaveBeenCalledWith("remote_disconnect", {
+    machineId: "machine",
+  });
+  expect(container.textContent).toContain("It does not stop the host");
+  expect(container.textContent).toContain(
+    "leaves this desktop’s credential valid",
+  );
+  expect(container.textContent).toContain(
+    "~/.monocode-host/bin/monocode-host service uninstall",
+  );
+  await act(async () => button("Remove from this desktop only").click());
   expect(invoke).toHaveBeenCalledWith("remote_disconnect", {
     machineId: "machine",
   });
+  expect(requested("devices.revokeSelf")).toBe(false);
   expect(
     vi
       .mocked(invoke)
@@ -174,4 +198,52 @@ it("removes the saved connection without issuing a remote stop", async () => {
         JSON.stringify(params ?? {}).includes('"stop"'),
       ),
   ).toBe(false);
+});
+
+it("revokes this desktop's credential before removing the connection", async () => {
+  await openRemove();
+  await act(async () => button("Revoke access and remove").click());
+  const calls = vi
+    .mocked(invoke)
+    .mock.calls.map(([command, params]) =>
+      command === "remote_request"
+        ? (params as { method: string }).method
+        : command,
+    );
+  expect(calls.indexOf("devices.revokeSelf")).toBeGreaterThanOrEqual(0);
+  expect(calls.indexOf("remote_disconnect")).toBeGreaterThan(
+    calls.indexOf("devices.revokeSelf"),
+  );
+  expect(container.textContent).toContain("access was revoked");
+});
+
+it("keeps the connection when the host cannot revoke its credential", async () => {
+  const fallback = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, params) => {
+    if (
+      command === "remote_request" &&
+      (params as { method: string }).method === "devices.revokeSelf"
+    )
+      throw "Machine is unreachable";
+    return fallback(command, params);
+  });
+  await openRemove();
+  await act(async () => button("Revoke access and remove").click());
+  expect(invoke).not.toHaveBeenCalledWith("remote_disconnect", {
+    machineId: "machine",
+  });
+  expect(container.textContent).toContain("Could not revoke access");
+  expect(button("Remove from this desktop only")).toBeTruthy();
+});
+
+it("does not spellcheck or autocorrect the machine name", async () => {
+  await render();
+  await act(async () => button("Add machine").click());
+  const name = container.querySelector<HTMLInputElement>(
+    'input[placeholder="Optional, e.g. Home Mac mini"]',
+  )!;
+  expect(name.getAttribute("spellcheck")).toBe("false");
+  expect(name.getAttribute("autocorrect")).toBe("off");
+  expect(name.getAttribute("autocapitalize")).toBe("off");
+  expect(container.textContent).toContain("loginctl enable-linger");
 });

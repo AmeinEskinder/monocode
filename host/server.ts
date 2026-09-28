@@ -14,6 +14,7 @@ import {
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import { SyncTransfers } from "./sync-transfer";
 import { browseHostDirectories } from "./browse";
 import { hostBranches, switchHostBranch } from "./git-branches";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
@@ -44,6 +45,7 @@ export function createHostServer(
   lifecycle?: (request: IncomingMessage, response: ServerResponse) => void,
 ) {
   const catalogs = new Map<string, Promise<HostModelCatalog>>();
+  const transfers = new SyncTransfers();
   const models = (projectId?: unknown) => {
     const cwd =
       typeof projectId === "string"
@@ -177,12 +179,24 @@ export function createHostServer(
             result = engine.store.summaries(projectId);
             break;
           }
-          case "sessions.sync":
-            result = engine.store.sync(
+          case "sessions.sync": {
+            const sessionId = String(params.sessionId ?? "");
+            result = transfers.respond(
+              sessionId,
+              engine.store.sync(
+                sessionId,
+                Number.isSafeInteger(params.revision)
+                  ? Number(params.revision)
+                  : undefined,
+              ),
+            );
+            break;
+          }
+          case "sessions.syncChunk":
+            result = transfers.chunk(
               String(params.sessionId ?? ""),
-              Number.isSafeInteger(params.revision)
-                ? Number(params.revision)
-                : undefined,
+              String(params.transfer ?? ""),
+              Number(params.offset),
             );
             break;
           case "sessions.get": {
@@ -201,6 +215,11 @@ export function createHostServer(
           }
           case "commands.dispatch":
             result = engine.command(params);
+            break;
+          case "devices.revokeSelf":
+            // Only the caller's own credential. Sessions and other devices
+            // are unaffected; the host keeps running.
+            result = { revoked: engine.store.revokeToken(token) };
             break;
           case "git.diff": {
             const project = engine.store.project(

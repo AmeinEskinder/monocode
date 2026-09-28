@@ -1,13 +1,21 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  findMachine,
   rememberedMachine,
   rememberMachine,
   rememberRemoteTab,
   remoteTabFor,
   useRemoteMachines,
+  type RememberedMachine,
 } from "../model/connections";
 import { MachinePicker } from "./MachinePicker";
 import { RemoteSessionPane } from "./RemoteSessionPane";
+
+const initialChoice = (
+  cwd: string,
+  shellId: string,
+): RememberedMachine | undefined =>
+  remoteTabFor(shellId) ?? rememberedMachine(cwd);
 
 /** Chooses where a new session runs. Local sessions always render the same
  * `local` element, so sending the first message (which makes the session
@@ -27,30 +35,46 @@ export function SessionMachineRouter({
   const [choice, setChoice] = useState(() => ({
     cwd,
     shellId,
-    machineId: choosable
-      ? (remoteTabFor(shellId)?.machineId ?? rememberedMachine(cwd))
-      : undefined,
+    machine: choosable ? initialChoice(cwd, shellId) : undefined,
   }));
   if (choosable && (choice.cwd !== cwd || choice.shellId !== shellId))
+    setChoice({ cwd, shellId, machine: initialChoice(cwd, shellId) });
+  const selected = choosable ? choice.machine : undefined;
+  const machine = findMachine(machines, selected);
+  // A machine that was removed and added again has a new local ID. Rebind
+  // this tab (and its remote session) to it instead of showing it as gone.
+  useEffect(() => {
+    if (!machine || !selected || machine.id === selected.machineId) return;
+    const tab = remoteTabFor(shellId);
+    if (tab?.machineId === selected.machineId)
+      rememberRemoteTab(shellId, machine, tab.sessionId);
+    if (rememberedMachine(cwd)?.machineId === selected.machineId)
+      rememberMachine(cwd, machine);
     setChoice({
       cwd,
       shellId,
-      machineId: remoteTabFor(shellId)?.machineId ?? rememberedMachine(cwd),
+      machine: { machineId: machine.id, environmentId: machine.environmentId },
     });
-  const machineId = choosable ? choice.machineId : undefined;
+  }, [machine, selected, cwd, shellId]);
   const picker = choosable ? (
     <MachinePicker
       machines={machines}
-      selected={machineId}
+      selected={machine?.id ?? selected?.machineId}
       onSelect={(id) => {
-        rememberMachine(cwd, id);
-        rememberRemoteTab(shellId, id);
-        setChoice({ cwd, shellId, machineId: id });
+        const next = machines.find((candidate) => candidate.id === id);
+        rememberMachine(cwd, next);
+        rememberRemoteTab(shellId, next);
+        setChoice({
+          cwd,
+          shellId,
+          machine: next
+            ? { machineId: next.id, environmentId: next.environmentId }
+            : undefined,
+        });
       }}
     />
   ) : undefined;
-  if (!machineId) return local(picker);
-  const machine = machines.find((machine) => machine.id === machineId);
+  if (!selected) return local(picker);
   if (!machine)
     return (
       <div className="flex h-full flex-col items-start gap-4 p-6">

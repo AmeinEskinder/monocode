@@ -1,9 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import { runPowerShell, windowsTaskScript } from "./windows";
+import {
+  runPowerShell,
+  windowsTaskScript,
+  windowsUninstallScript,
+} from "./windows";
 
 const exec = promisify(execFile);
 const LABEL = "com.monocode.host";
@@ -97,6 +101,77 @@ WantedBy=default.target
 `;
 }
 
+// SSH sessions may lack the user bus variables systemctl --user needs.
+const systemdEnvironment = (uid: number): NodeJS.ProcessEnv => {
+  const runtime = process.env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
+  return {
+    ...process.env,
+    XDG_RUNTIME_DIR: runtime,
+    DBUS_SESSION_BUS_ADDRESS:
+      process.env.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=${runtime}/bus`,
+  };
+};
+
+type Run = (
+  command: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+) => Promise<unknown>;
+
+/**
+ * Removes the login service or scheduled task so the host no longer starts
+ * automatically, stopping it where the service manager owns the process.
+ * Never deletes the data directory: sessions, logs and device credentials stay
+ * until the user removes them explicitly. Returns follow-up notes.
+ */
+export async function uninstallService(
+  system: {
+    platform?: NodeJS.Platform;
+    home?: string;
+    run?: Run;
+    powershell?: (script: string) => Promise<unknown>;
+  } = {},
+): Promise<string[]> {
+  const platform = system.platform ?? process.platform;
+  const home = system.home ?? homedir();
+  const run: Run =
+    system.run ??
+    ((command, args, env = process.env) =>
+      exec(command, args, { env, timeout: 30_000, maxBuffer: 128 * 1024 }));
+  const ignore = () => undefined;
+  if (platform === "darwin") {
+    await run("launchctl", [
+      "bootout",
+      `gui/${process.getuid!()}/${LABEL}`,
+    ]).catch(ignore);
+    await rm(join(home, "Library/LaunchAgents", `${LABEL}.plist`), {
+      force: true,
+    });
+    return [];
+  }
+  if (platform === "linux") {
+    const user = userInfo();
+    const env = systemdEnvironment(user.uid);
+    await run(
+      "systemctl",
+      ["--user", "disable", "--now", "monocode-host.service"],
+      env,
+    ).catch(ignore);
+    await rm(join(home, ".config/systemd/user/monocode-host.service"), {
+      force: true,
+    });
+    await run("systemctl", ["--user", "daemon-reload"], env).catch(ignore);
+    return [
+      `Lingering is still enabled for ${user.username}; other user services may rely on it. To turn it off: loginctl disable-linger ${user.username}`,
+    ];
+  }
+  if (platform === "win32") {
+    await (system.powershell ?? runPowerShell)(windowsUninstallScript());
+    return [];
+  }
+  throw new Error("MonoCode Host supports Windows, Linux and macOS");
+}
+
 export async function installService(
   options: ServiceOptions,
 ): Promise<{ port: number; pid: number }> {
@@ -147,13 +222,7 @@ export async function installService(
     }
   } else if (process.platform === "linux") {
     const user = userInfo();
-    const runtime = process.env.XDG_RUNTIME_DIR ?? `/run/user/${user.uid}`;
-    const env = {
-      ...process.env,
-      XDG_RUNTIME_DIR: runtime,
-      DBUS_SESSION_BUS_ADDRESS:
-        process.env.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=${runtime}/bus`,
-    };
+    const env = systemdEnvironment(user.uid);
     try {
       await run(
         "loginctl",

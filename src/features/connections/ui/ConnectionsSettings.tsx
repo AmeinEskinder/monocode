@@ -33,6 +33,8 @@ export function ConnectionsSettings() {
   const [answer, setAnswer] = useState("");
   const [answering, setAnswering] = useState(false);
   const [status, setStatus] = useState<Record<string, string>>({});
+  const [removing, setRemoving] = useState<string>();
+  const [revoking, setRevoking] = useState(false);
   const [url, setUrl] = useState("http://127.0.0.1:3774");
   const [token, setToken] = useState("");
   const alive = useRef(true);
@@ -187,12 +189,31 @@ export function ConnectionsSettings() {
       setAnswering(false);
     }
   };
-  const remove = async (machine: RemoteMachine) => {
+  const remove = async (machine: RemoteMachine, revoke: boolean) => {
     setError("");
+    setNotice("");
+    setRevoking(true);
     try {
+      if (revoke) {
+        try {
+          await remoteRequest(machine.id, "devices.revokeSelf");
+        } catch (reason) {
+          throw new Error(
+            `Could not revoke access, so ${machine.name} was not removed: ${String(reason)}. Reconnect and try again, or remove it from this desktop only and revoke it on the host with monocode-host devices and monocode-host revoke <device-id>.`,
+          );
+        }
+      }
       await disconnectMachine(machine.id);
+      setRemoving(undefined);
+      setNotice(
+        revoke
+          ? `${machine.name} was removed and this desktop's access was revoked. The host and its sessions keep running.`
+          : `${machine.name} was removed from this desktop. The host and its sessions keep running, and it still accepts this desktop's credential.`,
+      );
     } catch (reason) {
-      setError(String(reason));
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (alive.current) setRevoking(false);
     }
   };
   return (
@@ -224,39 +245,100 @@ export function ConnectionsSettings() {
       {machines.length > 0 ? (
         <div className="divide-y divide-stroke overflow-hidden rounded-xl border border-stroke">
           {machines.map((machine) => (
-            <div key={machine.id} className="flex items-center gap-3 px-4 py-4">
-              <Globe className="size-5 shrink-0 text-content/45" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] font-medium">
-                  {machine.name}
+            <div key={machine.id}>
+              <div className="flex items-center gap-3 px-4 py-4">
+                <Globe className="size-5 shrink-0 text-content/45" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium">
+                    {machine.name}
+                  </div>
+                  <div className="mt-1 truncate text-[12px] text-content/45">
+                    {machine.ssh
+                      ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
+                      : machine.endpoint}
+                  </div>
+                  <div className="mt-1 text-[12px] text-content/50">
+                    {status[machine.id] ?? "Checking connection…"}
+                  </div>
                 </div>
-                <div className="mt-1 truncate text-[12px] text-content/45">
-                  {machine.ssh
-                    ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
-                    : machine.endpoint}
-                </div>
-                <div className="mt-1 text-[12px] text-content/50">
-                  {status[machine.id] ?? "Checking connection…"}
-                </div>
-              </div>
-              {machine.ssh && (
+                {machine.ssh && (
+                  <button
+                    className={button}
+                    disabled={busy}
+                    onClick={() => void begin(machine)}
+                  >
+                    Reconnect
+                  </button>
+                )}
                 <button
-                  className={button}
-                  disabled={busy}
-                  onClick={() => void begin(machine)}
+                  disabled={busy || revoking}
+                  className="rounded p-2 text-content/40 hover:bg-selection hover:text-content disabled:opacity-40"
+                  aria-label={`Remove ${machine.name}`}
+                  title="Remove connection…"
+                  onClick={() => {
+                    setError("");
+                    setRemoving(machine.id);
+                  }}
                 >
-                  Reconnect
+                  <Trash2 className="size-4" />
                 </button>
+              </div>
+              {removing === machine.id && (
+                <div
+                  role="group"
+                  aria-label={`Confirm removing ${machine.name}`}
+                  className="flex flex-col gap-3 border-t border-stroke bg-content/3 px-4 py-4 text-[12px] leading-relaxed text-content/60"
+                >
+                  <p className="text-[13px] font-medium text-content">
+                    Remove {machine.name} from this desktop?
+                  </p>
+                  <p>
+                    This closes this desktop’s connection to the machine. It
+                    does not stop the host, and its sessions keep running and
+                    stay on that machine. You can add it again later.
+                  </p>
+                  <p>
+                    Removing alone leaves this desktop’s credential valid on the
+                    host. Revoke access to invalidate it first; the machine must
+                    be reachable.
+                  </p>
+                  <p>
+                    To stop the host and turn off its background service, run{" "}
+                    <code className="rounded bg-content/10 px-1">
+                      ~/.monocode-host/bin/monocode-host service uninstall
+                    </code>{" "}
+                    on that machine (
+                    <code className="rounded bg-content/10 px-1">
+                      %USERPROFILE%\.monocode-host\bin\monocode-host.cmd service
+                      uninstall
+                    </code>{" "}
+                    on Windows). Its sessions and history are kept.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className={button}
+                      disabled={revoking}
+                      onClick={() => void remove(machine, true)}
+                    >
+                      Revoke access and remove
+                    </button>
+                    <button
+                      className={button}
+                      disabled={revoking}
+                      onClick={() => void remove(machine, false)}
+                    >
+                      Remove from this desktop only
+                    </button>
+                    <button
+                      className="px-3 py-2 text-[13px] text-content/50"
+                      disabled={revoking}
+                      onClick={() => setRemoving(undefined)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               )}
-              <button
-                disabled={busy}
-                className="rounded p-2 text-content/40 hover:bg-selection hover:text-content disabled:opacity-40"
-                aria-label={`Remove ${machine.name}`}
-                title="Remove connection; remote sessions keep running"
-                onClick={() => void remove(machine)}
-              >
-                <Trash2 className="size-4" />
-              </button>
             </div>
           ))}
         </div>
@@ -301,6 +383,10 @@ export function ConnectionsSettings() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Optional, e.g. Home Mac mini"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
             />
           </label>
           <details className="text-[12px] text-content/50">
@@ -325,6 +411,16 @@ export function ConnectionsSettings() {
             SSH on the host and sign in to Codex or Claude Code there. On
             Windows and Mac, keep the host’s desktop account signed in and the
             machine awake. Locking the desktop is fine.
+          </p>
+          <p className="text-[12px] leading-relaxed text-content/45">
+            On Linux, setup installs a systemd user service and turns on
+            lingering for your account (
+            <code className="rounded bg-content/10 px-1">
+              loginctl enable-linger
+            </code>
+            ), so the host and your other user services keep running after you
+            log out. The host keeps running until you stop it on that machine;
+            removing it here only disconnects this desktop.
           </p>
           <div className="flex justify-end gap-2">
             <button

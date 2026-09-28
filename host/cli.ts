@@ -23,7 +23,7 @@ import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
 import { createHostServer } from "./server";
 import type { RemoteProvider } from "../src/features/connections/model/protocol";
-import { connectionInfo, installService } from "./service";
+import { connectionInfo, installService, uninstallService } from "./service";
 import { version } from "../package.json";
 import { protectWindowsDirectory } from "./windows";
 
@@ -52,6 +52,18 @@ const readRunning = (): Running | undefined => {
   if (!existsSync(statePath)) return;
   return JSON.parse(readFileSync(statePath, "utf8")) as Running;
 };
+const lifecycle = async (state: Running, action: "status" | "stop") => {
+  const response = await fetch(`http://127.0.0.1:${state.port}/lifecycle`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.secret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error("Could not verify the running host");
+};
 
 async function main() {
   if (command === "--version") {
@@ -63,6 +75,7 @@ async function main() {
   serve                 Run in foreground on 127.0.0.1
   start                 Run detached from this terminal
   service install       Install/start the persistent user service
+  service uninstall     Stop the host and remove its service; keeps data
   connection-info       Print the running host's port (JSON)
   status                Check the running host
   stop                  Stop the host and interrupt its running turns
@@ -82,8 +95,29 @@ Connect another computer using an SSH forward to the loopback port.`);
     console.log(JSON.stringify(await connectionInfo(directory)));
     return;
   }
+  if (command === "service" && args[1] === "uninstall") {
+    const notes = await uninstallService();
+    // Also stops a manually started host, or one the service manager left.
+    const state = readRunning();
+    if (state) {
+      await lifecycle(state, "stop").catch(() => undefined);
+      for (let i = 0; i < 200 && existsSync(statePath); i++)
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    console.log(
+      [
+        existsSync(statePath)
+          ? "The host service was removed, but the host is still running. Run stop, or end its process."
+          : "The host is stopped and will not start automatically.",
+        `Sessions, logs and device credentials are kept in ${directory}. Delete that directory only if you want to erase them.`,
+        ...notes,
+      ].join("\n"),
+    );
+    return;
+  }
   if (command === "service") {
-    if (args[1] !== "install") throw new Error("Use: service install");
+    if (args[1] !== "install")
+      throw new Error("Use: service install, or service uninstall");
     console.log(
       JSON.stringify(
         await installService({
@@ -102,16 +136,7 @@ Connect another computer using an SSH forward to the loopback port.`);
       console.log("Host is stopped");
       return;
     }
-    const response = await fetch(`http://127.0.0.1:${state.port}/lifecycle`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${state.secret}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action: command }),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) throw new Error("Could not verify the running host");
+    await lifecycle(state, command);
     console.log(
       command === "stop"
         ? "Host is stopping"
@@ -179,11 +204,9 @@ Connect another computer using an SSH forward to the loopback port.`);
   if (command === "revoke") {
     if (!args[1] || args[1].startsWith("--"))
       throw new Error("Provide a device ID to revoke");
-    const { changes } = store.db
-      .prepare("DELETE FROM devices WHERE id=?")
-      .run(args[1]);
+    const revoked = store.revokeDevice(args[1]);
     store.close();
-    if (!changes) throw new Error("Device not found");
+    if (!revoked) throw new Error("Device not found");
     console.log("Device revoked");
     return;
   }

@@ -105,3 +105,15 @@ if ($null -eq $task) {
 Start-ScheduledTask -TaskName $name
 `;
 }
+
+/** Unregisters this user's task. A running host is stopped separately
+ * through its lifecycle endpoint so active turns are interrupted cleanly. */
+export function windowsUninstallScript(): string {
+  return `
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$name = "MonoCode Host-$sid"
+if ($null -ne (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue)) {
+  Unregister-ScheduledTask -TaskName $name -Confirm:$false
+}
+`;
+}

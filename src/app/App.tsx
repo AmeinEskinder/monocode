@@ -2150,7 +2150,7 @@ export default function App({
 
   const onSelectRemoteSession = useCallback(
     (project: string, machine: RemoteMachine, remoteSessionId: string) => {
-      rememberMachine(project, machine.id);
+      rememberMachine(project, machine);
       rememberSession(project, machine.environmentId, remoteSessionId);
       setSearchViewOpen(false);
       setInboxViewOpen(false);
@@ -2162,7 +2162,8 @@ export default function App({
           shellId: leafIds(tab.layout).find((shellId) => {
             const selection = remoteTabFor(shellId);
             return (
-              selection?.machineId === machine.id &&
+              (selection?.machineId === machine.id ||
+                selection?.environmentId === machine.environmentId) &&
               selection.sessionId === remoteSessionId
             );
           }),
@@ -2174,7 +2175,7 @@ export default function App({
       }
       const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
       const tab = newTab(session.id);
-      rememberRemoteTab(session.id, machine.id, remoteSessionId);
+      rememberRemoteTab(session.id, machine, remoteSessionId);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, project);
       setActiveTabId(tab.id);

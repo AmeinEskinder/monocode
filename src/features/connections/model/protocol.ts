@@ -57,6 +57,17 @@ export type SessionSync =
       blocks: Block[];
     };
 
+/** A sync too large for one response. Its serialized JSON is read in bounded
+ * pieces with `sessions.syncChunk`, so every piece describes one revision. */
+export type SessionSyncTransfer = {
+  kind: "chunked";
+  transfer: string;
+  /** UTF-16 length of the serialized `SessionSync`. */
+  length: number;
+};
+export type SessionSyncChunk = { data: string };
+export type SessionSyncResponse = SessionSync | SessionSyncTransfer;
+
 /** Throws when the delta does not apply to `known`; request a snapshot then. */
 export function applySessionSync(
   known: HostSession | undefined,

@@ -4,6 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { SessionMachineRouter } from "./SessionMachineRouter";
+import {
+  refreshRemoteMachines,
+  rememberRemoteTab,
+  remoteTabFor,
+} from "../model/connections";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../sessions/ui/AgentTranscript", () => ({
@@ -63,4 +68,45 @@ it("keeps the local pane mounted when its first message is sent", async () => {
 it("does not load machines for sessions that already started", async () => {
   await render(false);
   expect(invoke).not.toHaveBeenCalled();
+});
+
+it("reopens a tab's session after its machine is removed and added again", async () => {
+  const removed = { id: "old", name: "Home server", environmentId: "env" };
+  rememberRemoteTab("shell", removed as never, "remote-session");
+  let machines: unknown[] = [];
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "remote_machines") return machines;
+    throw "Machine is unreachable";
+  });
+  await render(true);
+  expect(container.textContent).toContain(
+    "This machine is no longer connected",
+  );
+
+  // Adding the same host again creates a new local machine ID.
+  machines = [
+    {
+      id: "new",
+      name: "Home server",
+      endpoint: "ssh://me@home",
+      environmentId: "env",
+    },
+  ];
+  await act(async () => refreshRemoteMachines());
+  expect(container.textContent).not.toContain("no longer connected");
+  expect(container.textContent).toContain("Reconnecting");
+  expect(remoteTabFor("shell")).toEqual({
+    machineId: "new",
+    environmentId: "env",
+    sessionId: "remote-session",
+  });
+  expect(
+    vi
+      .mocked(invoke)
+      .mock.calls.some(
+        ([command, input]) =>
+          command === "remote_request" &&
+          (input as { machineId: string }).machineId === "new",
+      ),
+  ).toBe(true);
 });

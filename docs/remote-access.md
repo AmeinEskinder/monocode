@@ -15,20 +15,22 @@ Prerequisites:
 - SSH must already be enabled and reachable on the host. MonoCode uses the desktop's OpenSSH client and normal SSH config, keys, and agent. Windows clients need the OpenSSH Client feature installed.
 - Hosts: Windows 10/11 or Server 2019+, Linux, or macOS, on x64 or arm64. Mac/Linux need `curl` or `wget`, `tar`, and `shasum` or `sha256sum`. Windows needs Windows PowerShell 5.1, OpenSSH Server, and Task Scheduler; no WSL or Unix shell is required. Setup detects the remote platform through SSH.
 - Install and authenticate Codex and/or Claude Code on the host under the connecting OS account. Its non-interactive login shell must find the provider CLIs.
-- Linux needs systemd user services. Setup enables lingering so the host survives logout; if this requires administrator access, Settings displays the recovery command. macOS needs an active desktop login; keep that Mac signed in and awake.
+- Linux needs systemd user services. Setup runs `loginctl enable-linger` for the SSH account so the host survives logout. Lingering applies to all of that account's user services, and `service uninstall` leaves it enabled. If enabling it requires administrator access, Settings displays the recovery command. macOS needs an active desktop login; keep that Mac signed in and awake.
 - Windows uses a per-user Task Scheduler task, with no time limit, under the connecting user's normal permissions. Sign in to that same account at the Windows desktop and keep it signed in and awake. Locking the desktop and disconnecting SSH are fine; signing out or rebooting interrupts agents. The task starts again at the next login. No Windows password is stored for scheduling. This uses an interactive logon token because S4U tasks cannot access network or encrypted files. [Microsoft task logon documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/principal-logontype).
 - Windows provider discovery supports native `.exe` installations and standard npm installations of `@openai/codex` and `@anthropic-ai/claude-code`. npm entry points run with the bundled Node runtime; arbitrary custom `.cmd` wrappers are not supported. SSH aliases can supply Windows domain/user names through the normal SSH config.
 
 SSH host verification and password/passphrase prompts appear in Settings. Changed host keys are rejected by OpenSSH. Passwords/passphrases are used only for the current authentication, not saved. When key/agent authentication is available, opening the remote view restores a lost tunnel automatically. If SSH needs another prompt, use **Reconnect** in Settings. Reconnecting uses the saved device credential and checks the host's identity.
 
-The forward binds to a temporary port on the laptop's loopback interface. Removing a connection or quitting the desktop closes only that forward. It does not stop the host service or its agent sessions.
+The forward binds to a temporary port on the laptop's loopback interface. Quitting the desktop closes only that forward. It does not stop the host service or its agent sessions.
+
+**Remove** in Settings asks for confirmation and offers two choices. **Remove from this desktop only** deletes the saved connection and closes its forward. The host keeps running, and this desktop's device credential stays valid on it. **Revoke access and remove** first asks the host to revoke the credential this desktop is using, then removes the connection. It needs the machine to be reachable, and if revocation fails the connection is kept. Neither option stops the host, affects other desktops' credentials, or deletes sessions. Adding the same machine again reopens tabs and history that belong to it.
 
 ## Start a session
 
 1. Select your project in the existing project rail.
 2. In an empty session, use **This computer** to choose the saved machine.
 3. Browse folders on the host to link that project to an existing checkout, or enter its absolute path, such as `/home/me/code/my-app`.
-4. Select a provider, an available host model, and its settings; create a session and send a prompt. Model and permission settings can be changed between turns. Existing local branches can be selected when the host checkout is clean and all its sessions are idle.
+4. Select a provider, an available host model, and its settings; create a session and send a prompt. Model, reasoning effort, other model settings, and permission mode can be changed between turns: **Apply settings** saves them on the host, and the next turn uses them. If the host cannot load its model list, or no longer lists the session's model, the session's saved settings stay visible and editable, with a note explaining why. Existing local branches can be selected when the host checkout is clean and all its sessions are idle.
 
 The mapping is remembered per host. Paths may differ between your laptop and host. A project must currently exist in the laptop's rail; remote-only rail entries are a later integration step. Source files stay on the host; this feature shares host-owned sessions, not working-directory synchronization.
 
@@ -68,15 +70,18 @@ node build/host/monocode-host.mjs status
 node build/host/monocode-host.mjs devices
 node build/host/monocode-host.mjs revoke DEVICE_ID
 node build/host/monocode-host.mjs stop
+node build/host/monocode-host.mjs service uninstall
 ```
 
-SSH setup names each device credential after the desktop's computer name. Removing a saved connection from the desktop does not stop the host or revoke the device token. Use `revoke` on the host to remove access. Stopping the host interrupts active turns; restarting retains their transcripts and marks them interrupted. No uncertain provider operation is automatically replayed after a host crash.
+SSH setup names each device credential after the desktop's computer name. Removing a saved connection from the desktop does not stop the host. It revokes the device credential only when you choose **Revoke access and remove**. Otherwise, use `devices` and `revoke` on the host to remove access. Stopping the host interrupts active turns; restarting retains their transcripts and marks them interrupted. No uncertain provider operation is automatically replayed after a host crash.
+
+`service uninstall` is the cleanup path for a host you no longer want running. It removes the systemd user service, the LaunchAgent, or this user's scheduled task. It then stops the host, including a manually started one, and interrupts any running turns. It never deletes the data directory. Sessions, logs, and device credentials stay in `~/.monocode-host` until you delete that directory yourself. To remove access without stopping the host, use `revoke` instead. On Linux, the command prints how to turn off lingering if nothing else needs it.
 
 The machine must remain awake. Manual `start` launches a detached process. `service install` installs a user service; SSH setup runs it automatically. Only one host may own a data directory. Restart the host after changing its provider installation or PATH. Service installs preserve an already-running host, including one previously started manually.
 
-SSH-installed hosts have a launcher at `~/.monocode-host/bin/monocode-host`; use it in place of `node build/host/monocode-host.mjs` in management commands. Linux services are named `monocode-host.service`; macOS uses `com.monocode.host`. A service manager can restart a stopped process: to stop a service permanently, use `systemctl --user disable --now monocode-host.service` on Linux, or `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.monocode.host.plist` on macOS and remove that plist to disable the next login's startup.
+SSH-installed hosts have a launcher at `~/.monocode-host/bin/monocode-host`; use it in place of `node build/host/monocode-host.mjs` in management commands. Linux services are named `monocode-host.service`; macOS uses `com.monocode.host`. A service manager can restart a stopped process, so use `service uninstall` rather than `stop` to keep the host stopped.
 
-On Windows, the launcher is `%USERPROFILE%\.monocode-host\bin\monocode-host.cmd`. The scheduled task is named `MonoCode Host-<user SID>`. To disable automatic startup, disable that task in Task Scheduler and then run the launcher's `stop` command. Normal cancellation and shutdown stop the provider's process tree. A plain manual `start` is detached, but use `service install` for SSH-hosted Windows sessions so Task Scheduler owns the process independently of the SSH login.
+On Windows, the launcher is `%USERPROFILE%\.monocode-host\bin\monocode-host.cmd`. The scheduled task is named `MonoCode Host-<user SID>`; `service uninstall` unregisters it and stops the host. Normal cancellation and shutdown stop the provider's process tree. A plain manual `start` is detached, but use `service install` for SSH-hosted Windows sessions so Task Scheduler owns the process independently of the SSH login.
 
 ## Release packaging
 
@@ -88,7 +93,7 @@ The release workflow publishes `monocode-host-{darwin,linux}-{arm64,x64}.tar.gz`
 
 ## Scope of this first version
 
-Supported: persistent remote text conversations, existing Codex/Claude adapters, follow-up turns, approvals, questions, cancellation, per-device revocation, reconnect, tracked Git diffs against HEAD, and bounded text-file previews. The desktop polls the host and downloads only transcript blocks that changed since its last update (every 0.75 s while a session runs, 3 s otherwise). The host writes streamed output in 120 ms batches and keeps a bounded event journal.
+Supported: persistent remote text conversations, existing Codex/Claude adapters, follow-up turns, approvals, questions, cancellation, per-device revocation, reconnect, tracked Git diffs against HEAD, and bounded text-file previews. The desktop polls the host and downloads only transcript blocks that changed since its last update (every 0.75 s while a session runs, 3 s otherwise). The desktop rejects any single host response over 16 MiB. A sync above 4 MiB, such as reopening a very long transcript or one very large tool output, is sent as a series of bounded pieces of one consistent revision. Transcript size is therefore not limited by the response cap. The host writes streamed output in 120 ms batches and keeps a bounded event journal.
 
 Remote history appears in the main Sessions sidebar for projects linked to a host workspace. Local sessions retain their existing lifecycle. Remote `/compact` uses the provider's context compaction; other local slash commands and skill expansion are not yet available remotely. Remote attachments, worktree creation, editing files, terminals, named provider accounts, `/operator`, automations, orchestration, host upgrades from Settings, LAN discovery, and account-based tunnels are not implemented yet. Other remote prompts are sent directly to the provider.
 

@@ -196,6 +196,29 @@ describe("remote host API", () => {
     ).toBe(200);
   });
 
+  it("lets a desktop revoke only its own credential, keeping sessions", async () => {
+    const s = await setup();
+    const create = await s.call("commands.dispatch", {
+      type: "create",
+      commandId: "create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const id = create.value.result.sessionId;
+    expect((await s.call("devices.revokeSelf")).value.result).toEqual({
+      revoked: true,
+    });
+    expect((await s.call("environment.describe")).status).toBe(401);
+    const other = await s.call(
+      "sessions.sync",
+      { sessionId: id },
+      s.second.token,
+    );
+    expect(other.value.result.value.session.id).toBe(id);
+  });
+
   it("reads host files while rejecting traversal and symlink escapes", async () => {
     const s = await setup();
     writeFileSync(join(s.directory, "hello.txt"), "from host");

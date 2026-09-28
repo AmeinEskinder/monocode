@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostChildBackend } from "./child-backend";
@@ -18,6 +24,10 @@ import {
 const fixture = `#!/usr/bin/env node
 const readline = require('node:readline');
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+// Records what each turn actually received, so tests can prove that settings
+// applied between turns reach the provider.
+const record = value => require('node:fs').appendFileSync(require('node:path').join(__dirname, 'calls.log'), JSON.stringify(value) + '\\n');
+if (!process.argv.includes('app-server')) record({claudeArgs: process.argv.slice(2)});
 readline.createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line);
   if (request.method === 'initialize') send({id: request.id, result: {}});
@@ -25,6 +35,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   if (request.method === 'model/list') send({id: request.id, result: {data: [{model: 'fixture-model', displayName: 'Fixture model', supportedReasoningEfforts: ['low', 'high']}], nextCursor: null}});
   if (request.method === 'thread/start' || request.method === 'thread/resume') send({id: request.id, result: {thread: {id: 'fixture-thread'}}});
   if (request.method === 'turn/start') {
+    record({codexEffort: request.params.effort ?? null});
     send({id: request.id, result: {turn: {id: 'fixture-turn'}}});
     setTimeout(() => {
       send({method: 'item/agentMessage/delta', params: {threadId: 'fixture-thread', turnId: 'fixture-turn', itemId: 'message', delta: 'Headless Codex completed'}});
@@ -112,6 +123,65 @@ describe("existing providers over headless process I/O", () => {
         expect(state.blocks.at(-1)?.text).toContain("completed");
         expect(state.providerSessionId).toBeTruthy();
       }
+    },
+  );
+
+  it.each([
+    ["codex", "reasoningEffort"],
+    ["claude", "effort"],
+  ] as const)(
+    "uses %s reasoning effort applied between turns on the next turn",
+    async (harness, setting) => {
+      const log = join(directory, "calls.log");
+      const project = await engine.openProject(directory);
+      const { sessionId } = engine.command({
+        type: "create",
+        commandId: `effort-create-${harness}`,
+        projectId: project.id,
+        harness,
+        model: `${harness}:test`,
+        modelSettings: { [setting]: "low" },
+        runtimeMode: "supervised",
+      });
+      const efforts: Array<string | null> = [];
+      for (const [turn, effort] of ["low", "high"].entries()) {
+        if (turn)
+          engine.command({
+            type: "configure",
+            commandId: `effort-configure-${harness}`,
+            sessionId,
+            model: `${harness}:test`,
+            modelSettings: { [setting]: effort },
+            runtimeMode: "supervised",
+          });
+        writeFileSync(log, "");
+        engine.command({
+          type: "send",
+          commandId: `effort-${harness}-${turn}`,
+          sessionId,
+          text: "hello",
+        });
+        await vi.waitFor(
+          () => expect(store.session(sessionId).status).toBe("idle"),
+          { timeout: 4_000 },
+        );
+        const calls = readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        if (harness === "codex")
+          efforts.push(calls.find((call) => "codexEffort" in call).codexEffort);
+        else {
+          const args: string[] = calls.find(
+            (call) => call.claudeArgs,
+          ).claudeArgs;
+          efforts.push(args[args.indexOf("--effort") + 1] ?? null);
+        }
+      }
+      expect(efforts).toEqual(["low", "high"]);
+      expect(store.session(sessionId).session.modelSettings).toEqual({
+        [setting]: "high",
+      });
     },
   );
 });

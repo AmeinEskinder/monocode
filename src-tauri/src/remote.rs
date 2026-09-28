@@ -127,6 +127,10 @@ fn write(path: &Path, machines: &[StoredMachine]) -> Result<(), String> {
     result
 }
 
+/// Hosts split large session syncs into pieces below this cap
+/// (`host/sync-transfer.ts`), so it bounds memory without limiting transcripts.
+const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
 fn rpc(
     endpoint: &str,
     token: &str,
@@ -158,10 +162,10 @@ fn rpc(
     let mut bytes = Vec::new();
     response
         .into_reader()
-        .take(16 * 1024 * 1024 + 1)
+        .take(MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() > 16 * 1024 * 1024 {
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err("Host response is too large".into());
     }
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid host response")?;
@@ -295,10 +299,10 @@ pub fn remote_request(
             | "projects.open"
             | "models.list"
             | "sessions.list"
-            | "sessions.get"
             | "sessions.sync"
+            | "sessions.syncChunk"
             | "commands.dispatch"
-            | "events.read"
+            | "devices.revokeSelf"
             | "git.diff"
             | "git.branches"
             | "git.switch"

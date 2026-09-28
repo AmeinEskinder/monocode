@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AgentTranscript } from "../../sessions/ui/AgentTranscript";
 import { QuestionForm } from "../../sessions/ui/QuestionForm";
-import type { AgentModel } from "../../sessions/model/models";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_LABEL,
@@ -22,6 +21,11 @@ import {
   saveRemoteDraft,
   workspaceFor,
 } from "../model/connections";
+import {
+  carryModelSettings,
+  remoteModelControls,
+  sameModelSettings,
+} from "../model/remoteModels";
 import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import {
   requireHostDescriptor,
@@ -40,11 +44,6 @@ import {
 
 const field =
   "rounded-md border border-content/15 bg-background-base p-2 text-[12px] text-content";
-
-const settingsFor = (model?: AgentModel): Record<string, string> =>
-  Object.fromEntries(
-    (model?.settings ?? []).map((setting) => [setting.id, setting.value]),
-  );
 
 /** Remote views deliberately don't mount local workspace hooks. All execution,
  * approval and file actions below explicitly target their owning machine. */
@@ -66,8 +65,16 @@ export function RemoteSessionPane({
   const [path, setPath] = useState("");
   const [directory, setDirectory] = useState<HostDirectory>();
   const [browsing, setBrowsing] = useState(false);
-  const [catalog, setCatalog] = useState<HostModelCatalog>();
+  const [loadedCatalog, setLoadedCatalog] = useState<{
+    workspaceId: string;
+    value: HostModelCatalog;
+  }>();
+  const [catalogError, setCatalogError] = useState("");
   const [catalogRefresh, setCatalogRefresh] = useState(0);
+  const catalog =
+    workspace && loadedCatalog?.workspaceId === workspace.id
+      ? loadedCatalog.value
+      : undefined;
   const [branches, setBranches] = useState<HostBranches>();
   const [branchChoice, setBranchChoice] = useState("");
   const [switchingBranch, setSwitchingBranch] = useState(false);
@@ -159,6 +166,8 @@ export function RemoteSessionPane({
         }
         setOnline(true);
         setConnectionError("");
+        // A catalog request that failed while offline is retried on recovery.
+        if (failed) setCatalogRefresh((value) => value + 1);
         failed = 0;
         setSnapshot(next);
         active =
@@ -201,15 +210,18 @@ export function RemoteSessionPane({
   useEffect(() => {
     if (!descriptor || !workspace) return;
     let disposed = false;
-    setCatalog(undefined);
+    const workspaceId = workspace.id;
+    // Keep showing the last catalog while refreshing it.
     void remoteRequest<HostModelCatalog>(machine.id, "models.list", {
-      projectId: workspace.id,
+      projectId: workspaceId,
     })
       .then((value) => {
-        if (!disposed) setCatalog(value);
+        if (disposed) return;
+        setLoadedCatalog({ workspaceId, value });
+        setCatalogError("");
       })
       .catch((reason) => {
-        if (!disposed) setError(String(reason));
+        if (!disposed) setCatalogError(String(reason));
       });
     return () => {
       disposed = true;
@@ -218,13 +230,10 @@ export function RemoteSessionPane({
 
   useEffect(() => {
     if (sessionId || !catalog) return;
-    const first = catalog.models[provider]?.[0];
-    const available = catalog.models[provider]?.find(
-      (entry) => entry.id === model,
-    );
-    if (!available) {
-      setModel(first?.id ?? "");
-      setModelSettings(settingsFor(first));
+    const models = catalog.models[provider] ?? [];
+    if (!models.some((entry) => entry.id === model)) {
+      setModel(models[0]?.id ?? "");
+      setModelSettings(carryModelSettings(models[0]?.settings ?? [], {}));
     }
   }, [catalog, provider, sessionId, model]);
 
@@ -278,7 +287,7 @@ export function RemoteSessionPane({
     setSnapshot(undefined);
     setSessionId(id || undefined);
     setPreview(undefined);
-    rememberRemoteTab(shellId, machine.id, id || undefined);
+    rememberRemoteTab(shellId, machine, id || undefined);
     if (id) rememberSession(project, machine.environmentId, id);
   };
 
@@ -395,34 +404,65 @@ export function RemoteSessionPane({
     snapshot && snapshot.session.id === sessionId
       ? snapshot.session
       : undefined;
-  const configuredSession = useRef<string | undefined>(undefined);
+  // Mirror the host's saved settings whenever they change (after Apply, on
+  // reopening, or from another desktop). Unapplied local edits are replaced.
+  const savedSettings = session?.modelSettings ?? {};
+  const savedConfiguration = session
+    ? JSON.stringify([
+        session.id,
+        session.harness,
+        session.model,
+        session.runtimeMode,
+        Object.entries(savedSettings).sort(([a], [b]) => a.localeCompare(b)),
+      ])
+    : undefined;
   useEffect(() => {
-    if (!session || configuredSession.current === session.id) return;
-    configuredSession.current = session.id;
+    if (!session) return;
     setProvider(session.harness as RemoteProvider);
     setModel(session.model);
     setModelSettings(session.modelSettings ?? {});
     setMode(session.runtimeMode);
-  }, [session]);
+  }, [savedConfiguration]);
+  const controls = remoteModelControls(
+    catalog,
+    provider,
+    model,
+    session ? savedSettings : {},
+    session?.model,
+  );
+  const selectedModel = controls.model;
   const availableModels = catalog?.models[provider] ?? [];
-  const selectedModel = availableModels.find((entry) => entry.id === model);
+  // A saved model matched under an older id keeps that id until changed.
   const modelOptions = availableModels.map((entry) => ({
-    value: entry.id,
+    value: entry === selectedModel ? model : entry.id,
     label: entry.name,
     keywords: entry.nativeId,
   }));
-  if (model && !selectedModel && session)
+  if (session && !modelOptions.some((option) => option.value === model))
     modelOptions.unshift({
       value: model,
-      label: `${model} (unavailable)`,
+      label: `${model} (${catalog?.models[provider] ? "not listed by host" : "saved"})`,
       keywords: model,
     });
   const settingsChanged =
-    session &&
+    !!session &&
     (model !== session.model ||
       mode !== session.runtimeMode ||
-      JSON.stringify(modelSettings) !==
-        JSON.stringify(session.modelSettings ?? {}));
+      !sameModelSettings(modelSettings, savedSettings));
+  // The saved model stays configurable even when the host no longer lists it.
+  const canConfigure =
+    !!selectedModel || (!!session && model === session.model);
+  const catalogProblem = catalog?.errors[provider] ?? catalogError;
+  const modelNotice =
+    controls.fallback === "unlisted"
+      ? `The host no longer lists ${model}. Its saved settings still apply; choose another model to see what the host supports now.`
+      : controls.fallback === "no-catalog"
+        ? catalogProblem
+          ? "Model details are unavailable, so these are this session's saved settings."
+          : "Loading model details from the host…"
+        : controls.fallback === "saved"
+          ? "Some saved settings are no longer described by the host's model list."
+          : undefined;
   const modelControls = (
     <>
       <SearchableSelect
@@ -432,14 +472,19 @@ export function RemoteSessionPane({
         onChange={(next) => {
           setModel(next);
           setModelSettings(
-            settingsFor(availableModels.find((entry) => entry.id === next)),
+            next === session?.model
+              ? savedSettings
+              : carryModelSettings(
+                  remoteModelControls(catalog, provider, next, {}).settings,
+                  modelSettings,
+                ),
           );
         }}
         placeholder={catalog ? "No models available" : "Loading models…"}
         disabled={!catalog || modelOptions.length === 0}
         variant="row"
       />
-      {(selectedModel?.settings ?? []).map((setting) => (
+      {controls.settings.map((setting) => (
         <SearchableSelect
           key={`${model}:${setting.id}`}
           label={setting.label}
@@ -464,6 +509,18 @@ export function RemoteSessionPane({
         variant="row"
       />
     </>
+  );
+  const catalogAlert = catalogProblem && (
+    <div role="alert" className="text-[12px] text-red-400">
+      Could not load models: {catalogProblem}{" "}
+      <button
+        type="button"
+        className="underline"
+        onClick={() => setCatalogRefresh((value) => value + 1)}
+      >
+        Retry
+      </button>
+    </div>
   );
   const canAct = online && !sending && !pending && !switchingBranch;
   return (
@@ -566,6 +623,8 @@ export function RemoteSessionPane({
               setError("");
               setConnectionError("");
               setRefresh((value) => value + 1);
+              if (catalogProblem || !catalog)
+                setCatalogRefresh((value) => value + 1);
             }}
           >
             Retry connection
@@ -587,78 +646,88 @@ export function RemoteSessionPane({
         </div>
       )}
       {!workspace ? (
-        <form
-          className="m-auto flex w-full max-w-lg flex-col gap-3 p-6"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void attachWorkspace();
-          }}
-        >
-          <p className="font-medium">Connect this project to {machine.name}</p>
-          <p className="text-[13px] text-content/50">
-            Browse the folders on that machine to choose an existing checkout.
-            This links the project selected in your rail.
-          </p>
-          <div className="flex gap-2">
-            <input
-              required
-              className={`${field} min-w-0 flex-1`}
-              aria-label="Project path on host"
-              placeholder={
-                descriptor?.platform === "win32"
-                  ? "C:\\Users\\me\\code\\my-app"
-                  : "/home/me/projects/my-app"
-              }
-              value={path}
-              onChange={(event) => setPath(event.target.value)}
-            />
-            <button
-              type="button"
-              disabled={!online || browsing}
-              onClick={() => void browse(path || undefined)}
-              className="rounded-md bg-content/10 px-3 text-[12px] disabled:opacity-40"
-            >
-              Browse
-            </button>
-          </div>
-          {directory && (
-            <div
-              className="max-h-64 overflow-auto rounded-md border border-content/10 p-1"
-              aria-label="Host folders"
-            >
-              {directory.parent && (
-                <button
-                  type="button"
-                  className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
-                  onClick={() => void browse(directory.parent!)}
-                >
-                  .. Parent folder
-                </button>
-              )}
-              {directory.entries.map((entry) => (
-                <button
-                  key={entry.path}
-                  type="button"
-                  className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
-                  onClick={() => void browse(entry.path)}
-                >
-                  {entry.name}
-                </button>
-              ))}
-              {!directory.entries.length && (
-                <p className="px-2 py-1.5 text-[12px] text-content/45">
-                  No subfolders
-                </p>
-              )}
-            </div>
-          )}
-          <button
-            disabled={!online || sending}
-            className="rounded-md bg-content/10 px-4 py-2 text-[13px] disabled:opacity-40"
+        // Scroll the whole picker in short panes; centered flex content would
+        // otherwise be clipped at the bottom, hiding the last folder rows.
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <form
+            className="m-auto flex w-full max-w-lg shrink-0 flex-col gap-3 p-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void attachWorkspace();
+            }}
           >
-            Link workspace
-          </button>
-        </form>
+            <p className="font-medium">
+              Connect this project to {machine.name}
+            </p>
+            <p className="text-[13px] text-content/50">
+              Browse the folders on that machine to choose an existing checkout.
+              This links the project selected in your rail.
+            </p>
+            <div className="flex gap-2">
+              <input
+                required
+                className={`${field} min-w-0 flex-1`}
+                aria-label="Project path on host"
+                placeholder={
+                  descriptor?.platform === "win32"
+                    ? "C:\\Users\\me\\code\\my-app"
+                    : "/home/me/projects/my-app"
+                }
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+              />
+              <button
+                type="button"
+                disabled={!online || browsing}
+                onClick={() => void browse(path || undefined)}
+                className="rounded-md bg-content/10 px-3 text-[12px] disabled:opacity-40"
+              >
+                Browse
+              </button>
+            </div>
+            {directory && (
+              <div
+                className="max-h-64 overflow-y-auto overscroll-contain rounded-md border border-content/10"
+                aria-label="Host folders"
+              >
+                {/* Padding lives inside the scrolled content so WebKit keeps
+                  the last row fully reachable. */}
+                <div className="p-1">
+                  {directory.parent && (
+                    <button
+                      type="button"
+                      className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
+                      onClick={() => void browse(directory.parent!)}
+                    >
+                      .. Parent folder
+                    </button>
+                  )}
+                  {directory.entries.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      className="block w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
+                      onClick={() => void browse(entry.path)}
+                    >
+                      {entry.name}
+                    </button>
+                  ))}
+                  {!directory.entries.length && (
+                    <p className="px-2 py-1.5 text-[12px] text-content/45">
+                      No subfolders
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            <button
+              disabled={!online || sending}
+              className="rounded-md bg-content/10 px-4 py-2 text-[13px] disabled:opacity-40"
+            >
+              Link workspace
+            </button>
+          </form>
+        </div>
       ) : (
         <>
           {preview ? (
@@ -720,18 +789,7 @@ export function RemoteSessionPane({
                 />
                 {modelControls}
               </div>
-              {catalog?.errors[provider] && (
-                <div role="alert" className="text-[12px] text-red-400">
-                  Could not load models: {catalog.errors[provider]}{" "}
-                  <button
-                    type="button"
-                    className="underline"
-                    onClick={() => setCatalogRefresh((value) => value + 1)}
-                  >
-                    Retry
-                  </button>
-                </div>
-              )}
+              {catalogAlert}
               <p className="text-[12px] text-content/45">
                 Uses the current checkout and provider account on the host.
                 Sessions keep running when you close this app.
@@ -817,7 +875,7 @@ export function RemoteSessionPane({
                   {settingsChanged && (
                     <button
                       type="button"
-                      disabled={!canAct || !!session.busy || !selectedModel}
+                      disabled={!canAct || !!session.busy || !canConfigure}
                       className="rounded-md bg-accent/20 px-2.5 py-1.5 text-[12px] disabled:opacity-40"
                       onClick={() =>
                         void run({
@@ -834,6 +892,19 @@ export function RemoteSessionPane({
                     </button>
                   )}
                 </div>
+                {(modelNotice || catalogProblem || settingsChanged) && (
+                  <div className="mb-2 flex flex-col gap-1 text-[12px] text-content/50">
+                    {modelNotice && <p>{modelNotice}</p>}
+                    {catalogAlert}
+                    {settingsChanged && (
+                      <p>
+                        {session.busy
+                          ? "Settings can be applied when this turn finishes."
+                          : "Apply settings to use them from the next turn."}
+                      </p>
+                    )}
+                  </div>
+                )}
                 <textarea
                   aria-label="Message remote agent"
                   placeholder={
