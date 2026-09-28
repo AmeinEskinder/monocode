@@ -96,10 +96,10 @@ import {
 } from "../../settings/model/appearance";
 import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
-import { SessionMachineRouter } from "../../connections/ui/SessionMachineRouter";
+import { RemoteSession } from "../../connections/ui/RemoteSession";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
-type Props = {
-  machineControl?: ReactNode;
+export type SessionPaneProps = {
   session: Session;
   reviewUndoLocked?: boolean;
   visible: boolean;
@@ -218,27 +218,29 @@ type Props = {
   transcriptPool?: TranscriptPool;
 };
 
-export const SessionPane = memo(function SessionPane(props: Props) {
-  const { session } = props;
-  return (
-    <SessionMachineRouter
-      cwd={session.cwd}
-      shellId={session.id}
-      choosable={
-        session.blocks.length === 0 &&
-        !session.inboxAsk &&
-        !session.orchestrationLeadId &&
-        looksLikeProject(session.cwd)
-      }
-      local={(machineControl) => (
-        <LocalSessionPane {...props} machineControl={machineControl} />
-      )}
-    />
-  );
+type Props = SessionPaneProps & {
+  /** Set for a session running on another machine; see Composer. */
+  remoteHost?: ReactNode;
+  allowedModelHarnesses?: readonly HarnessId[];
+};
+
+export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
+  // Sessions in a project on another machine render this same pane, backed by
+  // the host instead of this computer's session runtime.
+  if (isRemoteProjectPath(props.session.cwd))
+    return (
+      <RemoteSession
+        shell={props.session}
+        visible={props.visible}
+        render={(remote) => <LocalSessionPane {...props} {...remote} />}
+      />
+    );
+  return <LocalSessionPane {...props} />;
 });
 
 const LocalSessionPane = memo(function LocalSessionPane({
-  machineControl,
+  remoteHost,
+  allowedModelHarnesses,
   session,
   reviewUndoLocked = false,
   visible,
@@ -311,9 +313,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const title = sessionDisplayTitle(session.title, session.harness);
   const isEmpty = session.blocks.length === 0;
   const recallLastTurnRef = useRef<(() => void) | null>(null);
-  const editLastTurnSupported = canEditLastTurn(session);
+  const remote = remoteHost != null;
+  const editLastTurnSupported = !remote && canEditLastTurn(session);
   const turnRecall = editLastTurnSupported ? lastTurnRecall(session) : null;
-  const draftBlock = sessionDraftBlock(session);
+  const draftBlock = remote ? undefined : sessionDraftBlock(session);
   useSyncExternalStore(
     subscribeProjectChatBackground,
     projectChatBackgroundRevision,
@@ -394,16 +397,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
   }, [visible]);
   // Restore a saved run for this lead; its agents render on the sidebar card.
   useEffect(() => {
-    if (!session.inboxAsk && !session.worktreeRemoved)
+    if (!remote && !session.inboxAsk && !session.worktreeRemoved)
       void orchestrator.hydrate(session.id).catch(console.error);
-  }, [session.id, session.inboxAsk, session.worktreeRemoved]);
+  }, [remote, session.id, session.inboxAsk, session.worktreeRemoved]);
   const [quoteRequest, setQuoteRequest] = useState<QuoteRequest>();
   const btwRequestId = useRef(0);
   const [btwOpenRequest, setBtwOpenRequest] = useState<BtwOpenRequest | null>(
     null,
   );
   const btwEnabled =
-    supportsBtwHarness(session.harness) || sessionHasBtwThreads(session.blocks);
+    !remote &&
+    (supportsBtwHarness(session.harness) ||
+      sessionHasBtwThreads(session.blocks));
   const onBtwCommand = useCallback(
     (text: string) => {
       if (
@@ -538,7 +543,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
   const composer = (
     <Composer
-      machineControl={machineControl}
+      remoteHost={remoteHost}
+      allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}
       focused={focused && composerFocused}
       focusToken={composerFocusToken}
@@ -864,7 +870,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     !session.inboxAsk &&
                     !session.worktreeRemoved &&
                     onBtwSubmit
-                      ? (threadId, messageId, text, turn, model, modelSettings) =>
+                      ? (
+                          threadId,
+                          messageId,
+                          text,
+                          turn,
+                          model,
+                          modelSettings,
+                        ) =>
                           onBtwSubmit(
                             session.id,
                             turn,
@@ -929,6 +942,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       : undefined
                   }
                   latestTurnAccessory={
+                    remote ||
                     session.inboxAsk ||
                     session.worktreeRemoved ||
                     draftBlock ? undefined : (

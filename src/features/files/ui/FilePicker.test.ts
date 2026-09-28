@@ -33,7 +33,7 @@ vi.mock("../model/fileIndex", () => ({
 }));
 
 vi.mock("../../projects/model/recents", () => ({
-  looksLikeProject: () => true,
+  isLocalProject: () => true,
 }));
 
 import { FilePicker, reloadActionHint } from "./FilePicker";

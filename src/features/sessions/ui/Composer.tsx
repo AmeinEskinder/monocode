@@ -192,7 +192,11 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
-  machineControl?: ReactNode;
+  /** Set for sessions that run on another machine. Replaces the local project
+   * and branch pickers, and turns off features that read this computer's
+   * files (attachments, @file mentions, skills) or its modes (plan, operator,
+   * orchestration, drafts). */
+  remoteHost?: ReactNode;
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
@@ -476,7 +480,7 @@ export function Composer({
   hideProjectPicker = false,
   hideBranchPicker = false,
   hideTopBar = false,
-  machineControl,
+  remoteHost,
   context,
   compactSupported = false,
   quoteRequest,
@@ -594,8 +598,11 @@ export function Composer({
   const [sessionFolderSelected, setSessionFolderSelected] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
+  const remote = remoteHost != null;
+  // Local indexes (files, skills) must never read a remote session's path.
+  const localCwd = remote ? "" : executionCwd;
   const [files, setFiles] = useState<ProjectFile[]>(
-    () => peekProjectFiles(executionCwd) ?? [],
+    () => peekProjectFiles(localCwd) ?? [],
   );
   const notesEnabled = useSyncExternalStore(
     subscribeNotesEnabled,
@@ -625,7 +632,7 @@ export function Composer({
   attachmentsRef.current = attachments;
 
   const mentionOpen =
-    mention !== null && (looksLikeProject(cwd) || notesEnabled);
+    !remote && mention !== null && (looksLikeProject(cwd) || notesEnabled);
   const navigationEmpty =
     draft.length === 0 &&
     attachments.length === 0 &&
@@ -636,35 +643,40 @@ export function Composer({
   const pickerOpen = skillPickerOpen || sessionFolderOpen;
   const skillCatalog = useComposerSkills({
     harness,
-    executionCwd,
+    executionCwd: localCwd,
     sessionId,
-    pickerOpen,
+    pickerOpen: pickerOpen && !remote,
   });
   const skills = skillCatalog.skills;
   const slashItems = useMemo(
-    () => [
-      SESSION_FOLDER_COMMAND,
-      OPERATOR_COMMAND,
-      PLAN_COMMAND,
-      COMPACT_COMMAND,
-      ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
-      ...skills.filter(
-        (skill) =>
-          ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(skill.name) &&
-          (skill.kind === "native" ||
-            (skill.name !== PLAN_COMMAND.name &&
-              skill.name !== COMPACT_COMMAND.name &&
-              skill.name !== SESSION_FOLDER_COMMAND.name &&
-              skill.name !== BTW_COMMAND.name)),
-      ),
-    ],
-    [harness, skills],
+    () =>
+      remote
+        ? [COMPACT_COMMAND]
+        : [
+            SESSION_FOLDER_COMMAND,
+            OPERATOR_COMMAND,
+            PLAN_COMMAND,
+            COMPACT_COMMAND,
+            ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
+            ...skills.filter(
+              (skill) =>
+                ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
+                  skill.name,
+                ) &&
+                (skill.kind === "native" ||
+                  (skill.name !== PLAN_COMMAND.name &&
+                    skill.name !== COMPACT_COMMAND.name &&
+                    skill.name !== SESSION_FOLDER_COMMAND.name &&
+                    skill.name !== BTW_COMMAND.name)),
+            ),
+          ],
+    [harness, skills, remote],
   );
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
   const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
-  const attachmentsSupported = harnessSupportsAttachments(harness);
+  const attachmentsSupported = !remote && harnessSupportsAttachments(harness);
   const skillNames = useMemo(
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
@@ -805,20 +817,21 @@ export function Composer({
     const apply = (next: ProjectFile[]) => {
       if (!cancelled) setFiles(next);
     };
-    const cached = peekProjectFiles(executionCwd);
+    const cached = peekProjectFiles(localCwd);
     apply(cached ?? []);
-    void loadProjectFiles(executionCwd, mentionOpen)
+    if (!localCwd) return;
+    void loadProjectFiles(localCwd, mentionOpen)
       .then(apply)
       .catch(() => undefined);
     const unsub = subscribeProjectFiles(() => {
-      const next = peekProjectFiles(executionCwd);
+      const next = peekProjectFiles(localCwd);
       if (next) apply(next);
     });
     return () => {
       cancelled = true;
       unsub();
     };
-  }, [executionCwd, mentionOpen]);
+  }, [localCwd, mentionOpen]);
 
   useEffect(() => {
     if (!mentionOpen || !notesEnabled) return;
@@ -1787,7 +1800,9 @@ export function Composer({
           ) : null}
           {hideTopBar ? null : (
             <div className="flex min-w-0 items-center gap-2.5 overflow-hidden px-3 pt-2.5">
-              {hideProjectPicker ? null : (
+              {remote ? (
+                remoteHost
+              ) : hideProjectPicker ? null : (
                 <CwdPicker
                   cwd={cwd}
                   recents={recents}
@@ -1798,7 +1813,7 @@ export function Composer({
                   onClose={() => ref.current?.focus()}
                 />
               )}
-              {hideBranchPicker ? null : draftWorkspace &&
+              {hideBranchPicker || remote ? null : draftWorkspace &&
                 onWorkspaceModeChange &&
                 onWorktreeBaseChange ? (
                 <>
@@ -1957,7 +1972,7 @@ export function Composer({
           <div className="flex items-center gap-1 px-2 pb-2">
             <div
               ref={plusRef}
-              className={compact ? "hidden" : "relative shrink-0"}
+              className={compact || remote ? "hidden" : "relative shrink-0"}
             >
               <ToolButton
                 label="Add files or choose a mode"
@@ -2255,7 +2270,7 @@ export function Composer({
             </div>
           </div>
         </div>
-        {runnerLive && runnerEnabled ? (
+        {runnerLive && runnerEnabled && !remote ? (
           <ComposerRunner
             boxRef={boxRef}
             cwd={cwd}
@@ -2265,9 +2280,6 @@ export function Composer({
           />
         ) : null}
       </div>
-      {machineControl ? (
-        <div className="mt-2 flex justify-end px-1">{machineControl}</div>
-      ) : null}
     </div>
   );
 }

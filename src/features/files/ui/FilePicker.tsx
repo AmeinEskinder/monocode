@@ -17,7 +17,7 @@ import {
 } from "../model/fileIndex";
 import { LAYER } from "../../../shared/lib/layers";
 import { fuzzyMatch, type FuzzyHit } from "../../../shared/lib/fuzzy";
-import { looksLikeProject } from "../../projects/model/recents";
+import { isLocalProject } from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
@@ -110,9 +110,9 @@ export function FilePicker({
       setLoading(false);
     } else {
       setFiles([]);
-      setLoading(looksLikeProject(cwd));
+      setLoading(isLocalProject(cwd));
     }
-    if (!looksLikeProject(cwd)) {
+    if (!isLocalProject(cwd)) {
       setLoading(false);
       return;
     }
@@ -283,7 +283,7 @@ function emptyLabel({
 }): string | null {
   if (paletteMode) return actionCount === 0 ? "No matching commands" : null;
   if (error && fileCount === 0) return error;
-  if (!looksLikeProject(cwd)) return "Open a project to search files";
+  if (!isLocalProject(cwd)) return "Open a project to search files";
   if (loading && fileCount === 0) return "Indexing files…";
   if (fileCount === 0) return "No files found";
   if (matchCount === 0) {

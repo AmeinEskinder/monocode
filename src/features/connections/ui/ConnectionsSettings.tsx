@@ -73,7 +73,7 @@ export function ConnectionsSettings() {
             setName("");
             setPort("");
             setNotice(
-              `${next.machine.name} is connected. Choose it from the machine selector in a new session.`,
+              `${next.machine.name} is connected. To work on it, click + next to Projects in the project rail and choose Open folder on a machine.`,
             );
             setStatus((current) => ({
               ...current,

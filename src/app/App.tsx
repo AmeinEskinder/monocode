@@ -344,6 +344,7 @@ import {
   forgetProject,
   lastProjectPath,
   loadRecents,
+  isLocalProject,
   looksLikeProject,
   normalizeProjectPath,
   projectRailItems,
@@ -529,12 +530,11 @@ import { requestTranscriptJump } from "../features/sessions/model/transcriptJump
 import { SettingsView, type SettingsAnchor } from "../features/settings/ui/SettingsView";
 import {
   OPEN_CONNECTIONS_EVENT,
-  rememberMachine,
-  remoteTabFor,
-  rememberRemoteTab,
-  rememberSession,
+  OPEN_REMOTE_PROJECT_EVENT,
+  rememberRemoteSession,
+  remoteSessionFor,
 } from "../features/connections/model/connections";
-import type { RemoteMachine } from "../features/connections/model/protocol";
+import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import { InboxView, LinkedWorkItemPanel } from "../features/inbox/ui/InboxView";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -2149,9 +2149,7 @@ export default function App({
   ]);
 
   const onSelectRemoteSession = useCallback(
-    (project: string, machine: RemoteMachine, remoteSessionId: string) => {
-      rememberMachine(project, machine);
-      rememberSession(project, machine.environmentId, remoteSessionId);
+    (project: string, remoteSessionId: string) => {
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
@@ -2159,14 +2157,9 @@ export default function App({
       const existing = tabs
         .map((tab) => ({
           tab,
-          shellId: leafIds(tab.layout).find((shellId) => {
-            const selection = remoteTabFor(shellId);
-            return (
-              (selection?.machineId === machine.id ||
-                selection?.environmentId === machine.environmentId) &&
-              selection.sessionId === remoteSessionId
-            );
-          }),
+          shellId: leafIds(tab.layout).find(
+            (shellId) => remoteSessionFor(shellId) === remoteSessionId,
+          ),
         }))
         .find(({ shellId }) => shellId);
       if (existing) {
@@ -2175,7 +2168,7 @@ export default function App({
       }
       const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
       const tab = newTab(session.id);
-      rememberRemoteTab(session.id, machine, remoteSessionId);
+      rememberRemoteSession(session.id, remoteSessionId);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, project);
       setActiveTabId(tab.id);
@@ -2358,7 +2351,7 @@ export default function App({
     (cwd: string) => {
       const workdir = cwd || projectCwdRef.current;
       const projectPath = projectCwdRef.current;
-      if (!looksLikeProject(projectPath)) return false;
+      if (!isLocalProject(projectPath)) return false;
       setProjectTerminals((prev) => {
         const existing = findProjectTerminal(prev, projectPath);
         const file = newTerminalFile(
@@ -2466,7 +2459,7 @@ export default function App({
   );
 
   const onToggleProjectTerminal = useCallback(() => {
-    if (!looksLikeProject(projectCwd)) return;
+    if (!isLocalProject(projectCwd)) return;
     const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
     if (!dock) {
       openProjectTerminal(gitCwd);
@@ -9471,6 +9464,12 @@ export default function App({
     window.addEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
     return () => window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
   }, [openSettings]);
+  const [remoteProjectDialogOpen, setRemoteProjectDialogOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setRemoteProjectDialogOpen(true);
+    window.addEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
+    return () => window.removeEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
+  }, []);
 
   const onOpenNotificationSettings = useCallback(
     (path?: string) => {
@@ -10583,10 +10582,10 @@ export default function App({
                   terminalOpen={runningTerminalOpen}
                   onToggleTerminal={onToggleRunningTerminal}
                   onNewTerminal={
-                    looksLikeProject(projectCwd) ? onNewTerminal : undefined
+                    isLocalProject(projectCwd) ? onNewTerminal : undefined
                   }
                   onShowTerminal={
-                    looksLikeProject(projectCwd)
+                    isLocalProject(projectCwd)
                       ? onShowProjectTerminal
                       : undefined
                   }
@@ -10646,6 +10645,15 @@ export default function App({
             <WhatsNewDialog
               version={whatsNewVersion}
               onClose={() => setWhatsNewVersion(null)}
+            />
+          ) : null}
+          {remoteProjectDialogOpen ? (
+            <AddRemoteProjectDialog
+              onCancel={() => setRemoteProjectDialogOpen(false)}
+              onOpen={(key) => {
+                setRemoteProjectDialogOpen(false);
+                onSelectProject(key);
+              }}
             />
           ) : null}
           {providerSignInRequest ? (

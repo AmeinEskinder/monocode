@@ -17,7 +17,6 @@ import {
   GitPullRequest,
   Inbox,
   ListFilter,
-  MessageMultiple,
   PanelLeft,
   Pin,
   Plus,
@@ -132,6 +131,7 @@ import { normalizeHex } from "../../shared/lib/colorUtils";
 import {
   collectRailProjects,
   looksLikeProject,
+  isRemoteProjectPath,
   sameProjectPath,
   type RecentProject,
 } from "../../features/projects/model/recents";
@@ -167,8 +167,10 @@ import { SessionsEmpty } from "../../features/sessions/ui/SessionsEmpty";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GithubStarPrompt } from "./GithubStarPrompt";
-import { useRemoteProjectSessions } from "../../features/connections/model/connections";
-import type { RemoteMachine } from "../../features/connections/model/protocol";
+import {
+  remoteSessionFor,
+  useRemoteProjectSessions,
+} from "../../features/connections/model/connections";
 
 const MIN_WIDTH = 260;
 const MAX_WIDTH = 560;
@@ -221,11 +223,7 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
-  onSelectRemoteSession?: (
-    project: string,
-    machine: RemoteMachine,
-    sessionId: string,
-  ) => void;
+  onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
   onPrefetchSession?: (sessionId: string) => void;
   onPlaceSessionOnPane?: (
@@ -342,7 +340,7 @@ function SidebarComponent({
   onOpenTerminal,
   onFileMoved,
   onFileDeleted,
-  tab,
+  tab: requestedTab,
   onTabChange,
   filesSearchOpen,
   onFilesSearchOpenChange,
@@ -395,15 +393,12 @@ function SidebarComponent({
   onOpenWhatsNew,
   onDismissUpdate,
 }: Props) {
-  const gitRoot = gitCwd || cwd;
-  const remoteGroups = useRemoteProjectSessions(
-    cwd,
-    tab === "sessions" && !!onSelectRemoteSession && !!cwd && cwd !== "~",
-  );
-  const remoteSessionCount = remoteGroups.reduce(
-    (count, group) => count + group.sessions.length,
-    0,
-  );
+  // A project on another machine has no local files or git checkout here;
+  // its sidebar lists the sessions on that machine.
+  const remoteProject = isRemoteProjectPath(cwd);
+  const tab: SidebarTabId = remoteProject ? "sessions" : requestedTab;
+  const gitRoot = remoteProject ? "" : gitCwd || cwd;
+  const remote = useRemoteProjectSessions(cwd, tab === "sessions");
   const resize = useDragResize({
     min: MIN_WIDTH,
     max: () => Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.5)),
@@ -578,8 +573,11 @@ function SidebarComponent({
   const sessionListKey = `${cwd}\0${sessionFilters.showArchived}\0${sessionFilters.time}\0${sessionFilters.hiddenHarnesses.join(",")}\0${sessionFilters.status.working}\0${sessionFilters.status.needsApproval}\0${sessionFilters.status.done}\0${searchQuery}`;
   const sessionHarnesses = harnessesInSessions(sessions);
   const narrowedByUser = searchNarrowed || filtersActive;
-  const visibleTabs = tabOrder.filter((itemId) => itemId !== "inbox");
+  const visibleTabs = remoteProject
+    ? (["sessions"] as SidebarTabId[])
+    : tabOrder.filter((itemId) => itemId !== "inbox");
   const sortable = useAnimatedReorder(visibleTabs, (ids) => {
+    if (remoteProject) return;
     let index = 0;
     const next = tabOrder.map((itemId) =>
       itemId === "inbox" ? itemId : ids[index++],
@@ -1564,9 +1562,45 @@ function SidebarComponent({
                       ? "No matching sessions"
                       : "No sessions match these filters"}
                   </p>
-                ) : remoteSessionCount > 0 ? (
+                ) : remoteProject && remote.sessions.length > 0 ? (
+                  <ul className="flex flex-col gap-0.5 p-1.5">
+                    {remote.sessions
+                      .filter((session) =>
+                        session.title
+                          .toLocaleLowerCase()
+                          .includes(searchQuery.trim().toLocaleLowerCase()),
+                      )
+                      .map((session) => (
+                        <li key={session.id}>
+                          <SessionCard
+                            session={{
+                              id: session.id,
+                              cwd,
+                              harness: session.harness,
+                              model: "",
+                              runtimeMode: "supervised",
+                              title: session.title,
+                              createdAt: session.updatedAt,
+                              updatedAt: session.updatedAt,
+                            }}
+                            isActive={
+                              !!activeSessionId &&
+                              remoteSessionFor(activeSessionId) === session.id
+                            }
+                            isSelected={false}
+                            busy={session.status === "running"}
+                            done={false}
+                            linkedUpdate={false}
+                            needsApproval={false}
+                            now={now}
+                            onSelect={(id) => onSelectRemoteSession?.(cwd, id)}
+                          />
+                        </li>
+                      ))}
+                  </ul>
+                ) : remoteProject && !remote.machine ? (
                   <p className="px-3 py-2 text-[12px] text-content/45">
-                    No local sessions
+                    This project’s machine isn’t connected on this computer.
                   </p>
                 ) : (
                   <SessionsEmpty message="Sessions you start will show up here" />
@@ -1812,59 +1846,6 @@ function SidebarComponent({
                     />
                   ) : null}
                 </ul>
-              )}
-              {remoteGroups.some((group) => group.sessions.length > 0) && (
-                <section
-                  aria-label="Remote sessions"
-                  className="border-t border-stroke px-1.5 py-2"
-                >
-                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-content/45">
-                    Remote sessions
-                  </p>
-                  {remoteGroups.map(({ machine, sessions }) => {
-                    const matching = sessions.filter((session) =>
-                      session.title
-                        .toLocaleLowerCase()
-                        .includes(searchQuery.toLocaleLowerCase()),
-                    );
-                    if (!matching.length) return null;
-                    return (
-                      <div key={machine.id} className="mb-2">
-                        <p
-                          className="truncate px-2 py-1 text-[11px] text-content/45"
-                          title={machine.name}
-                        >
-                          {machine.name}
-                        </p>
-                        {matching.map((session) => (
-                          <button
-                            key={session.id}
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] hover:bg-content/10"
-                            title={`${session.title} · ${machine.name}`}
-                            onClick={() =>
-                              onSelectRemoteSession?.(cwd, machine, session.id)
-                            }
-                          >
-                            <MessageMultiple
-                              className="size-3.5 shrink-0 text-content/45"
-                              strokeWidth={1.75}
-                            />
-                            <span className="min-w-0 flex-1 truncate">
-                              {session.title}
-                            </span>
-                            {session.status === "running" && (
-                              <span
-                                className="size-1.5 shrink-0 rounded-full bg-emerald-400"
-                                title="Running"
-                              />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </section>
               )}
             </div>
           )}

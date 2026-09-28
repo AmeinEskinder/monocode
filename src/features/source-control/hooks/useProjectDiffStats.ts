@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { gitDiffStats, subscribeGitChanged, type GitDiffStats } from "../../../platform/tauri/fs";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
 type Entry = {
   cwd: string;
@@ -98,7 +99,8 @@ export function useProjectDiffStats(
   cwd: string,
   enabled: boolean,
 ): GitDiffStats | null {
-  const active = enabled && Boolean(cwd) && cwd !== "~";
+  const active =
+    enabled && Boolean(cwd) && cwd !== "~" && !isRemoteProjectPath(cwd);
   const subscribe = useCallback(
     (listener: () => void) => {
       if (!active) return () => undefined;

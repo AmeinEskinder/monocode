@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   FolderPlus,
+  Globe,
   Inbox,
   MoreHorizontal,
   Pin,
@@ -80,6 +81,9 @@ import { notificationMuteStatus } from "../../features/notifications/ui/notifica
 import { useProjectNotificationPreferences } from "../../features/notifications/hooks/useProjectNotificationPreferences";
 import { useNotificationProjects } from "../../features/notifications/hooks/useNotificationProjects";
 import { GithubStarPrompt } from "./GithubStarPrompt";
+import { Popover } from "../../shared/ui/Popover";
+import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
+import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useProjectMenu } from "./useProjectMenu";
 
 type Props = {
@@ -656,17 +660,7 @@ function ProjectSectionHeader({
           <FolderPlus className="size-3.5" strokeWidth={1.75} />
         </button>
       ) : null}
-      {onAdd ? (
-        <button
-          type="button"
-          title="Open project"
-          aria-label="Open project"
-          onClick={onAdd}
-          className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content"
-        >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-        </button>
-      ) : null}
+      {onAdd ? <AddProjectButton onOpenFolder={onAdd} /> : null}
     </div>
   );
 }
@@ -869,7 +863,13 @@ function ProjectCard({
   const additions = stats?.additions ?? 0;
   const deletions = stats?.deletions ?? 0;
   const hasChanges = files > 0 || additions > 0 || deletions > 0;
-  const cardTitle = projectCardTitle(item.path, name, stats, busy);
+  const remote = remoteProjectFor(item.path);
+  const cardTitle = projectCardTitle(
+    remote ? `${remote.cwd} (on another machine)` : item.path,
+    name,
+    stats,
+    busy,
+  );
   const cardAriaLabel = projectCardAriaLabel(name, stats, busy);
 
   return (
@@ -941,6 +941,15 @@ function ProjectCard({
         {hasChanges ? (
           <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden">
             <ProjectDiffStat additions={additions} deletions={deletions} />
+          </span>
+        ) : null}
+        {remote ? (
+          <span
+            role="img"
+            aria-label="On another machine"
+            className="grid size-4 shrink-0 place-items-center text-content/45"
+          >
+            <Globe className="size-3" strokeWidth={1.75} aria-hidden="true" />
           </span>
         ) : null}
         {muteStatus ? (
@@ -1075,4 +1084,64 @@ function projectCardAriaLabel(
   if (additions > 0) parts.push(`+${formatInteger(additions)}`);
   if (deletions > 0) parts.push(`-${formatInteger(deletions)}`);
   return parts.join(", ");
+}
+
+/** Adds a folder on this computer, or one on a connected machine. */
+function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const item =
+    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/80 hover:bg-content/8 hover:text-content";
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        title="Open project"
+        aria-label="Open project"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content"
+      >
+        <Plus className="size-3.5" strokeWidth={1.75} />
+      </button>
+      {open ? (
+        <Popover
+          anchor={anchor}
+          align="start"
+          width={230}
+          onDismiss={() => setOpen(false)}
+          role="menu"
+          aria-label="Open project"
+          className="p-1"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              onOpenFolder();
+            }}
+          >
+            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open folder…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event(OPEN_REMOTE_PROJECT_EVENT));
+            }}
+          >
+            <Globe className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open folder on a machine…
+          </button>
+        </Popover>
+      ) : null}
+    </>
+  );
 }

@@ -1,9 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   applySessionSync,
   type HostCommand,
-  type HostProject,
   type HostSession,
   type HostSessionSummary,
   type RemoteMachine,
@@ -11,134 +10,37 @@ import {
   type SessionSyncChunk,
   type SessionSyncResponse,
 } from "./protocol";
+import { remoteProjectFor } from "./remoteProjects";
 
 const CHANGE = "monocode:remote-machines";
 const HISTORY_CHANGE = "monocode:remote-history";
 export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
+export const OPEN_REMOTE_PROJECT_EVENT = "monocode:open-remote-project";
 export const refreshRemoteMachines = () =>
   window.dispatchEvent(new Event(CHANGE));
-const KEY = "monocode.remote-projects.v1";
-const TAB_KEY = "monocode.remote-tabs.v1";
-/** Removing and re-adding a machine gives it a new local ID, so selections
- * also keep the host's stable identity to find it again. */
-type MachineRef = Pick<RemoteMachine, "id" | "environmentId">;
-export type RemoteTabSelection = {
-  machineId: string;
-  environmentId?: string;
-  sessionId?: string;
-};
-export type RememberedMachine = { machineId: string; environmentId?: string };
-export function findMachine<T extends MachineRef>(
-  machines: readonly T[],
-  selection?: { machineId: string; environmentId?: string },
-): T | undefined {
-  if (!selection) return undefined;
-  return (
-    machines.find((machine) => machine.id === selection.machineId) ??
-    (selection.environmentId
-      ? machines.find(
-          (machine) => machine.environmentId === selection.environmentId,
-        )
-      : undefined)
-  );
-}
-export function remoteTabFor(shellId: string): RemoteTabSelection | undefined {
+const TAB_KEY = "monocode.remote-tabs.v2";
+
+/** The host session a tab in a remote project shows; none for a new session. */
+export function remoteSessionFor(shellId: string): string | undefined {
   try {
-    const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
-    return all[shellId];
+    const value = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}")[shellId];
+    return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;
   }
 }
-export function rememberRemoteTab(
-  shellId: string,
-  machine?: MachineRef,
-  sessionId?: string,
-) {
+export function rememberRemoteSession(shellId: string, sessionId?: string) {
   try {
     const all = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}");
-    if (machine)
-      all[shellId] = {
-        machineId: machine.id,
-        environmentId: machine.environmentId,
-        sessionId,
-      };
+    if (sessionId) all[shellId] = sessionId;
     else delete all[shellId];
     localStorage.setItem(TAB_KEY, JSON.stringify(all));
   } catch {
     /* tab selection is best effort */
   }
-}
-type ProjectConnections = {
-  machineId?: string;
-  machineEnvironment?: string;
-  workspaces?: Record<string, HostProject>;
-  sessions?: Record<string, string>;
-  drafts?: Record<string, string>;
-};
-
-function read(project: string): ProjectConnections {
-  try {
-    return JSON.parse(localStorage.getItem(KEY) ?? "{}")[project] ?? {};
-  } catch {
-    return {};
-  }
-}
-function update(project: string, patch: Partial<ProjectConnections>) {
-  try {
-    const all = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    all[project] = { ...read(project), ...patch };
-    localStorage.setItem(KEY, JSON.stringify(all));
-  } catch {
-    /* preferences are best effort; host state is durable */
-  }
+  window.dispatchEvent(new Event(HISTORY_CHANGE));
 }
 
-export const rememberedMachine = (
-  project: string,
-): RememberedMachine | undefined => {
-  const { machineId, machineEnvironment } = read(project);
-  return machineId
-    ? { machineId, environmentId: machineEnvironment }
-    : undefined;
-};
-export const rememberMachine = (project: string, machine?: MachineRef) =>
-  update(project, {
-    machineId: machine?.id,
-    machineEnvironment: machine?.environmentId,
-  });
-export const workspaceFor = (
-  project: string,
-  environment: string,
-): HostProject | undefined => read(project).workspaces?.[environment];
-export const rememberWorkspace = (
-  project: string,
-  environment: string,
-  workspace: HostProject,
-) => {
-  update(project, {
-    workspaces: { ...read(project).workspaces, [environment]: workspace },
-  });
-  window.dispatchEvent(new Event(HISTORY_CHANGE));
-};
-export const rememberedSession = (
-  project: string,
-  environment: string,
-): string | undefined => read(project).sessions?.[environment];
-export const rememberSession = (
-  project: string,
-  environment: string,
-  sessionId: string,
-) => {
-  update(project, {
-    sessions: { ...read(project).sessions, [environment]: sessionId },
-  });
-  window.dispatchEvent(new Event(HISTORY_CHANGE));
-};
-export const remoteDraft = (project: string, key: string): string =>
-  read(project).drafts?.[key] ?? "";
-export const saveRemoteDraft = (project: string, key: string, draft: string) =>
-  update(project, { drafts: { ...read(project).drafts, [key]: draft } });
 const pendingPrefix = (project: string, environment: string) =>
   `monocode.remote-command.v1:${JSON.stringify([project, environment])}:`;
 
@@ -298,21 +200,12 @@ export function useRemoteMachines(enabled = true): {
   return state;
 }
 
-export type RemoteHistoryGroup = {
-  machine: RemoteMachine;
-  sessions: HostSessionSummary[];
-};
+const historyKey = (project: string) => `monocode.remote-history.v2:${project}`;
 
-const historyKey = (project: string, environment: string) =>
-  `monocode.remote-history.v1:${JSON.stringify([project, environment])}`;
-
-function cachedSessions(
-  project: string,
-  environment: string,
-): HostSessionSummary[] {
+function cachedSessions(project: string): HostSessionSummary[] {
   try {
     const value: unknown = JSON.parse(
-      localStorage.getItem(historyKey(project, environment)) ?? "[]",
+      localStorage.getItem(historyKey(project)) ?? "[]",
     );
     return Array.isArray(value) ? (value as HostSessionSummary[]) : [];
   } catch {
@@ -320,75 +213,69 @@ function cachedSessions(
   }
 }
 
-/** Keeps mapped remote sessions visible in the project sidebar across reconnects. */
+export type RemoteProjectSessions = {
+  /** Undefined when this machine is not connected on this computer. */
+  machine?: RemoteMachine;
+  sessions: HostSessionSummary[];
+};
+
+/** Lists a remote project's host sessions, keeping the last list visible
+ * while the machine is unreachable. */
 export function useRemoteProjectSessions(
   project: string,
   enabled = true,
-): RemoteHistoryGroup[] {
-  const { machines } = useRemoteMachines(enabled);
-  const machinesRef = useRef(machines);
-  machinesRef.current = machines;
-  const [groups, setGroups] = useState<RemoteHistoryGroup[]>([]);
+): RemoteProjectSessions {
+  const remote = enabled ? remoteProjectFor(project) : undefined;
+  const { machines } = useRemoteMachines(!!remote);
+  const machine = remote
+    ? machines.find((entry) => entry.environmentId === remote.environmentId)
+    : undefined;
+  const [sessions, setSessions] = useState<HostSessionSummary[]>(() =>
+    remote ? cachedSessions(project) : [],
+  );
   const [refresh, setRefresh] = useState(0);
-  const failures = useRef(new Map<string, { count: number; next: number }>());
-  const machinesKey = JSON.stringify(machines);
   useEffect(() => {
-    if (!enabled) return;
+    if (!remote) return;
     const changed = () => setRefresh((value) => value + 1);
     window.addEventListener(HISTORY_CHANGE, changed);
     return () => window.removeEventListener(HISTORY_CHANGE, changed);
-  }, [enabled]);
+  }, [!!remote]);
   useEffect(() => {
-    if (!enabled) return;
+    setSessions(remote ? cachedSessions(project) : []);
+    if (!remote || !machine) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
     const poll = async () => {
-      const mapped = machinesRef.current.flatMap((machine) => {
-        const workspace = workspaceFor(project, machine.environmentId);
-        return workspace ? [{ machine, workspace }] : [];
-      });
-      const rows = await Promise.all(
-        mapped.map(async ({ machine, workspace }) => {
-          let sessions = cachedSessions(project, machine.environmentId);
-          const key = JSON.stringify([project, machine.id, workspace.id]);
-          const retry = failures.current.get(key);
-          if (!retry || retry.next <= Date.now()) {
-            try {
-              sessions = await remoteRequest<HostSessionSummary[]>(
-                machine.id,
-                "sessions.list",
-                { projectId: workspace.id },
-              );
-              if (!disposed)
-                localStorage.setItem(
-                  historyKey(project, machine.environmentId),
-                  JSON.stringify(sessions),
-                );
-              failures.current.delete(key);
-            } catch {
-              // Keep cached history and back off while SSH is unavailable.
-              const count = Math.min(4, (retry?.count ?? 0) + 1);
-              failures.current.set(key, {
-                count,
-                next: Date.now() + Math.min(30_000, 3_000 * 2 ** count),
-              });
-            }
-          }
-          return {
-            machine,
-            sessions,
-          };
-        }),
-      );
-      if (disposed) return;
-      setGroups(rows);
-      timer = setTimeout(() => void poll(), 3_000);
+      try {
+        const next = await remoteRequest<HostSessionSummary[]>(
+          machine.id,
+          "sessions.list",
+          { projectId: remote.projectId },
+        );
+        if (disposed) return;
+        failures = 0;
+        setSessions(next);
+        try {
+          localStorage.setItem(historyKey(project), JSON.stringify(next));
+        } catch {
+          /* the list is refetched next time */
+        }
+      } catch {
+        // Keep the cached list and back off while SSH is unavailable.
+        failures = Math.min(4, failures + 1);
+      }
+      if (!disposed)
+        timer = setTimeout(
+          () => void poll(),
+          failures ? Math.min(30_000, 3_000 * 2 ** failures) : 3_000,
+        );
     };
     void poll();
     return () => {
       disposed = true;
       clearTimeout(timer);
     };
-  }, [enabled, project, machinesKey, refresh]);
-  return groups;
+  }, [project, remote?.projectId, machine?.id, refresh]);
+  return { machine, sessions };
 }

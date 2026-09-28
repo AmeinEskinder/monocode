@@ -1,8 +1,8 @@
 # Remote access (experimental)
 
-MonoCode can run Codex and Claude Code sessions on a separate Windows, Linux, or macOS host. The host owns the provider processes and session database. Closing the desktop, closing its remote view, or losing the SSH tunnel does not stop a host session.
+MonoCode can run Codex and Claude Code sessions on a separate Windows, Linux, or macOS host. The host owns the provider processes and session database. Closing the desktop, closing a session tab, or losing the SSH tunnel does not stop a host session.
 
-Select your project in the existing project rail. The **This computer** control in an empty session chooses the machine. Remote sessions appear in the main Sessions sidebar under the machine name. Select one there to open it in its own tab.
+A folder on a connected machine is a project in the rail, marked with a globe. Every session in it runs on that machine, in the same session view and composer as a local session. The Sessions sidebar lists that machine's sessions for the project.
 
 ## Connect through SSH
 
@@ -23,16 +23,17 @@ SSH host verification and password/passphrase prompts appear in Settings. Change
 
 The forward binds to a temporary port on the laptop's loopback interface. Quitting the desktop closes only that forward. It does not stop the host service or its agent sessions.
 
-**Remove** in Settings asks for confirmation and offers two choices. **Remove from this desktop only** deletes the saved connection and closes its forward. The host keeps running, and this desktop's device credential stays valid on it. **Revoke access and remove** first asks the host to revoke the credential this desktop is using, then removes the connection. It needs the machine to be reachable, and if revocation fails the connection is kept. Neither option stops the host, affects other desktops' credentials, or deletes sessions. Adding the same machine again reopens tabs and history that belong to it.
+**Remove** in Settings asks for confirmation and offers two choices. **Remove from this desktop only** deletes the saved connection and closes its forward. The host keeps running, and this desktop's device credential stays valid on it. **Revoke access and remove** first asks the host to revoke the credential this desktop is using, then removes the connection. It needs the machine to be reachable, and if revocation fails the connection is kept. Neither option stops the host, affects other desktops' credentials, or deletes sessions. Adding the same machine again reconnects its projects, tabs, and history.
 
 ## Start a session
 
-1. Select your project in the existing project rail.
-2. In an empty session, use **This computer** to choose the saved machine.
-3. Browse folders on the host to link that project to an existing checkout, or enter its absolute path, such as `/home/me/code/my-app`.
-4. Select a provider, an available host model, and its settings; create a session and send a prompt. Model, reasoning effort, other model settings, and permission mode can be changed between turns: **Apply settings** saves them on the host, and the next turn uses them. If the host cannot load its model list, or no longer lists the session's model, the session's saved settings stay visible and editable, with a note explaining why. Existing local branches can be selected when the host checkout is clean and all its sessions are idle.
+1. In the project rail, click **+** next to Projects and choose **Open folder on a machine…**.
+2. Choose the machine, browse to an existing checkout (or type its absolute path, such as `/home/me/code/my-app`), and click **Open**.
+3. Send a message. The first message creates the session on the host with the model, reasoning effort, and permission mode shown in the composer.
 
-The mapping is remembered per host. Paths may differ between your laptop and host. A project must currently exist in the laptop's rail; remote-only rail entries are a later integration step. Source files stay on the host; this feature shares host-owned sessions, not working-directory synchronization.
+The composer's model picker lists the host's Codex and Claude Code models. Model, effort, and permission changes apply to the host session directly, and the next turn uses them; a change made during a running turn is applied when that turn finishes. If the host cannot load its model list, or no longer lists the session's model, the session's saved settings stay visible and editable. The composer's top row shows the machine, its connection state, and the host checkout's branch. Other local branches can be selected when the checkout is clean and all its sessions are idle. **Changes** shows the host checkout's tracked diff against HEAD.
+
+Features that read or run on this computer are not available in these projects: attachments, `@` file mentions, skills and slash commands other than `/compact`, plan and operator modes, drafts, worktrees, terminals, and the Files and Source Control sidebar tabs. Source files stay on the host; this feature shares host-owned sessions, not working-directory synchronization.
 
 ## Manual connection (advanced / development)
 
@@ -95,7 +96,7 @@ The release workflow publishes `monocode-host-{darwin,linux}-{arm64,x64}.tar.gz`
 
 Supported: persistent remote text conversations, existing Codex/Claude adapters, follow-up turns, approvals, questions, cancellation, per-device revocation, reconnect, tracked Git diffs against HEAD, and bounded text-file previews. The desktop polls the host and downloads only transcript blocks that changed since its last update (every 0.75 s while a session runs, 3 s otherwise). The desktop rejects any single host response over 16 MiB. A sync above 4 MiB, such as reopening a very long transcript or one very large tool output, is sent as a series of bounded pieces of one consistent revision. Transcript size is therefore not limited by the response cap. The host writes streamed output in 120 ms batches and keeps a bounded event journal.
 
-Remote history appears in the main Sessions sidebar for projects linked to a host workspace. Local sessions retain their existing lifecycle. Remote `/compact` uses the provider's context compaction; other local slash commands and skill expansion are not yet available remotely. Remote attachments, worktree creation, editing files, terminals, named provider accounts, `/operator`, automations, orchestration, host upgrades from Settings, LAN discovery, and account-based tunnels are not implemented yet. Other remote prompts are sent directly to the provider.
+Remote history appears in the Sessions sidebar of each project on a machine. Local sessions retain their existing lifecycle. Remote `/compact` uses the provider's context compaction; other local slash commands and skill expansion are not yet available remotely. Remote attachments, worktree creation, editing files, terminals, named provider accounts, `/operator`, automations, orchestration, host upgrades from Settings, LAN discovery, and account-based tunnels are not implemented yet. Other remote prompts are sent directly to the provider.
 
 The headless host runs the reused TypeScript adapters with a Node process backend. It proves the execution boundary without introducing the planned Rust daemon/worker IPC yet. Node is included in host release archives, separately from the desktop application.
 

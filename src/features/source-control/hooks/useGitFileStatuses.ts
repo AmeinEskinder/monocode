@@ -6,6 +6,7 @@ import {
 } from "../../../platform/tauri/fs";
 import { subscribeDirsChanged } from "../../files/model/fileTree";
 import { parentPath } from "../../../shared/lib/paths";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
 export type GitStatusMap = {
   files: Map<string, string>;
@@ -143,7 +144,8 @@ export function useGitFileStatuses(
   cwd: string,
   enabled: boolean,
 ): GitStatusMap {
-  const active = enabled && Boolean(cwd) && cwd !== "~";
+  const active =
+    enabled && Boolean(cwd) && cwd !== "~" && !isRemoteProjectPath(cwd);
   const subscribe = useCallback(
     (listener: () => void) => {
       if (!active) return () => undefined;
