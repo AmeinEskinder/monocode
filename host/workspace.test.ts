@@ -39,7 +39,7 @@ it("reports a broken Git index instead of searching ignored files", async () => 
 });
 
 it("lists host files and rejects paths escaping the project", async () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "monocode-workspace-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "monocode-workspace-")));
   roots.push(root);
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "app.ts"), "source\n");
@@ -96,12 +96,13 @@ it("lists host files and rejects paths escaping the project", async () => {
 });
 
 it("reports tracked and untracked changes and commits staged files", async () => {
-  const root = realpathSync(
+  const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "monocode-workspace-git-")),
   );
   roots.push(root);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root });
   git("init", "-q");
+  git("config", "core.autocrlf", "false");
   git("config", "user.name", "Workspace Test");
   git("config", "user.email", "workspace@example.test");
   writeFileSync(join(root, "app.ts"), "before\n");
@@ -185,7 +186,7 @@ it("reports tracked and untracked changes and commits staged files", async () =>
   });
   await hostGitAction(root, "commit", undefined, "remote commit");
   expect((await hostGitIndex(root)).files).toEqual([]);
-  const remote = realpathSync(
+  const remote = realpathSync.native(
     mkdtempSync(join(tmpdir(), "monocode-workspace-remote-")),
   );
   roots.push(remote);
@@ -206,13 +207,14 @@ it("reports tracked and untracked changes and commits staged files", async () =>
 });
 
 it("stages selected host diff content without replacing the working file", async () => {
-  const root = realpathSync(
+  const root = realpathSync.native(
     mkdtempSync(join(tmpdir(), "monocode-workspace-hunk-")),
   );
   roots.push(root);
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8" });
   git("init", "-q");
+  git("config", "core.autocrlf", "false");
   git("config", "user.name", "Workspace Test");
   git("config", "user.email", "workspace@example.test");
   mkdirSync(join(root, "src"), { recursive: true });

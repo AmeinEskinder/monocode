@@ -185,6 +185,7 @@ describe("remote host API", () => {
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: s.project.cwd });
     git("init", "-q");
+    git("config", "core.autocrlf", "false");
     git("checkout", "-q", "-b", "main");
     writeFileSync(join(s.project.cwd, ".gitignore"), "host.db*\n");
     writeFileSync(join(s.project.cwd, "file.txt"), "initial\n");
@@ -450,7 +451,7 @@ describe("remote host API", () => {
     mkdirSync(join(checkout, "src"), { recursive: true });
     writeFileSync(join(checkout, "src", "app.ts"), "before\n");
     const project = await s.engine.openProject(checkout);
-    const root = project.cwd;
+    const root = project.cwd.replace(/\\/g, "/");
     const run = async (command: string, args: Record<string, unknown>) =>
       (await s.call("workspace.run", { command, args })).value;
 
@@ -534,7 +535,7 @@ describe("remote host API", () => {
       cwd: root, sha: history.head, relative: "src/app.ts",
     })).result).toMatchObject({ original: "", current: "after\n", status: "added" });
     expect((await run("git_worktrees", { cwd: root })).result.worktrees)
-      .toContainEqual(expect.objectContaining({ path: root, isMain: true }));
+      .toContainEqual(expect.objectContaining({ path: project.cwd, isMain: true }));
 
     for (const path of [outside, `${root}/../outside`, `${root}/.git/config`])
       expect((await run("read_text_file", { path })).error).toBeTruthy();
