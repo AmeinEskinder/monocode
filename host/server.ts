@@ -39,12 +39,14 @@ import {
   searchHostFiles,
   writeHostFile,
 } from "./workspace";
+import { WorkspaceCommands } from "./workspace-commands";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 
 const exec = promisify(execFile);
-// Editing a 1 MiB text file sends both its original and replacement contents.
-const MAX_BODY = 4 * 1024 * 1024;
+// A 1 MiB text file can expand to 6 MiB when JSON escapes control characters.
+// Existing files.write sends both the original and replacement contents.
+const MAX_BODY = 16 * 1024 * 1024;
 
 async function body(
   request: IncomingMessage,
@@ -69,6 +71,10 @@ export function createHostServer(
 ) {
   const catalogs = new Map<string, Promise<HostModelCatalog>>();
   const transfers = new SyncTransfers();
+  const workspace = new WorkspaceCommands(
+    engine.store,
+    (projectId, action) => engine.withIdleProject(projectId, action),
+  );
   const models = (projectId?: unknown) => {
     const cwd =
       typeof projectId === "string"
@@ -186,6 +192,7 @@ export function createHostServer(
                 "files.read",
                 "files.list",
                 "files.index",
+                "workspace.run",
                 "files.search",
                 "files.searchContent",
                 "files.create",
@@ -427,6 +434,9 @@ export function createHostServer(
             );
             break;
           }
+          case "workspace.run":
+            result = (await workspace.run(params.command, params.args)) ?? null;
+            break;
           case "files.search": {
             const project = engine.store.project(
               String(params.projectId ?? ""),

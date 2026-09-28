@@ -192,10 +192,10 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
-  /** Set for sessions that run on another machine. Replaces local project and
-   * branch pickers and keeps local file mentions, skills, and app modes off. */
-  remoteHost?: ReactNode;
+  /** Keeps local file mentions, skills, and app modes off for host sessions. */
+  remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
+  allowNewWorktree?: boolean;
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
@@ -479,8 +479,9 @@ export function Composer({
   hideProjectPicker = false,
   hideBranchPicker = false,
   hideTopBar = false,
-  remoteHost,
+  remoteSession = false,
   remoteFeatures,
+  allowNewWorktree = true,
   context,
   compactSupported = false,
   quoteRequest,
@@ -598,7 +599,7 @@ export function Composer({
   const [sessionFolderSelected, setSessionFolderSelected] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
-  const remote = remoteHost != null;
+  const remote = remoteSession;
   // Local indexes (files, skills) must never read a remote session's path.
   const localCwd = remote ? "" : executionCwd;
   const [files, setFiles] = useState<ProjectFile[]>(
@@ -1606,6 +1607,7 @@ export function Composer({
     e.stopPropagation();
     const next =
       (workspaceMode ?? "current") === "current" ? "worktree" : "current";
+    if (next === "worktree" && !allowNewWorktree) return;
     if (next === "worktree" && !resolvedWorktreeBase) return;
     onWorkspaceModeChange(
       next,
@@ -1803,9 +1805,7 @@ export function Composer({
           ) : null}
           {hideTopBar ? null : (
             <div className="flex min-w-0 items-center gap-2.5 overflow-hidden px-3 pt-2.5">
-              {remote ? (
-                remoteHost
-              ) : hideProjectPicker ? null : (
+              {!remote && !hideProjectPicker ? (
                 <CwdPicker
                   cwd={cwd}
                   recents={recents}
@@ -1815,8 +1815,8 @@ export function Composer({
                   onNewTerminal={worktreeRemoved ? undefined : onNewTerminal}
                   onClose={() => ref.current?.focus()}
                 />
-              )}
-              {hideBranchPicker || remote ? null : draftWorkspace &&
+              ) : null}
+              {hideBranchPicker ? null : draftWorkspace &&
                 onWorkspaceModeChange &&
                 onWorktreeBaseChange ? (
                 <>
@@ -1825,6 +1825,7 @@ export function Composer({
                     mode={workspaceMode ?? "current"}
                     base={resolvedWorktreeBase}
                     enabled={enabled && !busy}
+                    allowNewWorktree={allowNewWorktree}
                     onModeChange={onWorkspaceModeChange}
                     onBaseChange={onWorktreeBaseChange}
                     onSelectWorktree={onWorktreeChange}

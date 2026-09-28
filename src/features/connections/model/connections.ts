@@ -37,6 +37,16 @@ export function remotePendingWorktree(shellId: string): string | undefined {
   }
 }
 
+/** The host checkout currently used by a remote tab. */
+export function remoteTabCwd(project: string, shellId?: string): string | undefined {
+  if (!shellId) return undefined;
+  const sessionId = remoteSessionFor(shellId);
+  return (
+    (sessionId ? cachedRemoteSessionSummary(project, sessionId)?.cwd : undefined) ??
+    remotePendingWorktree(shellId)
+  );
+}
+
 export function rememberRemotePendingWorktree(shellId: string, path?: string) {
   try {
     const all = JSON.parse(localStorage.getItem(WORKTREE_KEY) ?? "{}");
@@ -180,6 +190,18 @@ export function knownRemoteMachine(
   environmentId: string,
 ): RemoteMachine | undefined {
   return cachedMachines.find((entry) => entry.environmentId === environmentId);
+}
+
+/** The connected machine for an environment, reading the list when needed. */
+export async function remoteMachineFor(
+  environmentId: string,
+): Promise<RemoteMachine | undefined> {
+  const known = knownRemoteMachine(environmentId);
+  if (known || machinesLoaded) return known;
+  const value = await invoke<RemoteMachine[]>("remote_machines");
+  cachedMachines = Array.isArray(value) ? value : [];
+  machinesLoaded = true;
+  return knownRemoteMachine(environmentId);
 }
 
 export async function connectMachine(

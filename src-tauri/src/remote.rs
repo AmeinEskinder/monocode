@@ -364,6 +364,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "files.read"
             | "files.list"
             | "files.index"
+            | "workspace.run"
             | "files.search"
             | "files.searchContent"
             | "files.create"

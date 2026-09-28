@@ -37,8 +37,7 @@ import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
 import { SessionChangesDiff } from "../../source-control/ui/SessionChangesDiff";
 import { TerminalView } from "../../terminal/ui/TerminalView";
 import { WorkingTreeDiff } from "../../source-control/ui/WorkingTreeDiff";
-import { RemoteFileEditor } from "../../connections/ui/RemoteFileEditor";
-import { RemoteWorkingTreeDiff } from "../../connections/ui/RemoteWorkingTreeDiff";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
 type Props = {
   pane: EditorPane;
@@ -139,15 +138,11 @@ function FilePaneComponent({
           </div>
         ) : unifiedReview && activeFile ? (
           <div className="absolute inset-0 h-full">
-            {activeFile.remoteFile ? (
-              <RemoteWorkingTreeDiff file={activeFile} />
-            ) : (
-              <WorkingTreeDiff
-                cwd={activeFile.cwd}
-                focusPath={activeFile.path}
-                focusKind={activeFile.changeKind}
-              />
-            )}
+            <WorkingTreeDiff
+              cwd={activeFile.cwd}
+              focusPath={activeFile.path}
+              focusKind={activeFile.changeKind}
+            />
           </div>
         ) : null}
         {pane.files.map((file) => {
@@ -195,25 +190,6 @@ function FilePaneComponent({
                   active={focused && file.id === pane.activeFileId}
                   onMetaChange={(patch) =>
                     onTerminalMetaChange?.(file.id, patch)
-                  }
-                />
-              ) : file.remoteFile ? (
-                <RemoteFileEditor
-                  file={
-                    file as FilePaneTab & {
-                      remoteFile: NonNullable<FilePaneTab["remoteFile"]>;
-                    }
-                  }
-                  active={focused && file.id === pane.activeFileId}
-                  navigation={
-                    editorNavigation &&
-                    editorPathsEqual(file.path, editorNavigation.path)
-                      ? editorNavigation
-                      : null
-                  }
-                  onDirtyChange={(dirty) => onDirtyChange(file.id, dirty)}
-                  onErrorCountChange={(count) =>
-                    onErrorCountChange(file.id, count)
                   }
                 />
               ) : isImagePath(file.path) ? (
@@ -310,6 +286,7 @@ function PlanSurface({
   const block = plan
     ? session?.blocks.find((entry) => entry.id === plan.blockId)
     : undefined;
+  const remote = !!session && isRemoteProjectPath(session.cwd);
 
   if (!block || !plan) {
     return (
@@ -360,7 +337,7 @@ function PlanSurface({
               <Play className="size-3" />
               {buildLabel}
             </button>
-            {session ? (
+            {session && !remote ? (
               <BuildTargetButton
                 from={session.harness}
                 model={session.model}
@@ -379,6 +356,7 @@ function PlanSurface({
             spellCheck={false}
             value={block.text}
             disabled={
+              remote ||
               block.plan?.status === "streaming" ||
               block.plan?.status === "building" ||
               block.plan?.status === "built"

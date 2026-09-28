@@ -9,7 +9,6 @@ import {
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { HostEngine } from "./engine";
 import { HostStore } from "./store";
@@ -415,6 +414,110 @@ describe("remote host API", () => {
     ).toContain("outside");
   });
 
+  it("answers this app's file commands inside host projects only", async () => {
+    const s = await setup();
+    const outside = mkdtempSync(join(tmpdir(), "monocode-outside-"));
+    cleanups.push(async () => rmSync(outside, { recursive: true, force: true }));
+    const checkout = join(s.directory, "checkout");
+    mkdirSync(join(checkout, "src"), { recursive: true });
+    writeFileSync(join(checkout, "src", "app.ts"), "before\n");
+    const project = await s.engine.openProject(checkout);
+    const root = project.cwd;
+    const run = async (command: string, args: Record<string, unknown>) =>
+      (await s.call("workspace.run", { command, args })).value;
+
+    expect((await run("list_dir", { path: root })).result).toEqual([
+      { name: "src", path: `${root}/src`, isDir: true, ignored: false },
+    ]);
+    expect(
+      (await run("read_text_file", { path: `${root}/src/app.ts` })).result,
+    ).toBe("before\n");
+    expect(
+      (await run("read_binary_file", { path: `${root}/src/app.ts` })).result,
+    ).toBe(Buffer.from("before\n").toString("base64"));
+    await run("write_text_file", { path: `${root}/src/app.ts`, content: "after\n" });
+    expect(
+      (await run("read_text_file", { path: `${root}/src/app.ts` })).result,
+    ).toBe("after\n");
+    const [stat] = (
+      await run("stat_files", { paths: [`${root}/src/app.ts`, `${root}/nope`] })
+    ).result;
+    expect(stat).toMatchObject({ path: `${root}/src/app.ts` });
+    expect(typeof stat.mtimeMs).toBe("number");
+
+    expect(
+      (await run("create_path", { parent: root, name: "docs/a.md", isDir: false }))
+        .result,
+    ).toBe(`${root}/docs/a.md`);
+    expect(
+      (await run("create_path", { parent: root, name: "docs/a.md", isDir: false }))
+        .error,
+    ).toContain("already exists");
+    expect(
+      (await run("rename_path", { path: `${root}/docs/a.md`, name: "b.md" }))
+        .result,
+    ).toBe(`${root}/docs/b.md`);
+    expect(
+      (await run("copy_path", { from: `${root}/docs/b.md`, destParent: `${root}/docs` }))
+        .result,
+    ).toBe(`${root}/docs/b copy.md`);
+    expect(
+      (await run("move_path", { from: `${root}/docs/b.md`, destParent: `${root}/src` }))
+        .result,
+    ).toBe(`${root}/src/b.md`);
+    await run("delete_path", { path: `${root}/docs` });
+    expect(
+      (await run("list_project_files", { cwd: root })).result
+        .map((file: { relative: string }) => file.relative)
+        .sort(),
+    ).toEqual(["src/app.ts", "src/b.md"]);
+    expect(
+      (await s.call("files.index", { projectId: project.id, cwd: root }))
+        .value.result,
+    ).toEqual(["src/app.ts", "src/b.md"]);
+
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root });
+    git("init", "-q");
+    git("config", "user.name", "Host Test");
+    git("config", "user.email", "host@example.test");
+    git("add", "src");
+    git("commit", "-qm", "initial");
+    writeFileSync(join(root, "src", "app.ts"), "changed\n");
+    expect((await run("search_project", { options: { cwd: root, query: "changed" } })).result.matches)
+      .toContainEqual(expect.objectContaining({
+        path: `${root}/src/app.ts`, relative: "src/app.ts", line: 1,
+      }));
+    const gitIndex = (await run("git_diff_index", { cwd: root })).result;
+    expect(gitIndex.files).toContainEqual(expect.objectContaining({
+      path: "src/app.ts", relative: "src/app.ts", unstaged: true,
+    }));
+    expect((await run("git_file_diff", { cwd: root, relative: "src/app.ts", staged: false })).result)
+      .toMatchObject({ original: "after\n", current: "changed\n" });
+    await run("git_stage_file", { cwd: root, relative: "src/app.ts" });
+    expect((await run("git_diff_index", { cwd: root })).result.files)
+      .toContainEqual(expect.objectContaining({ relative: "src/app.ts", staged: true }));
+    const history = (await run("git_history", { cwd: root, limit: 10 })).result;
+    expect(history.commits[0])
+      .toMatchObject({ subject: "initial", head: true });
+    expect(history.commits[0].timestamp).toBeLessThan(10_000_000_000);
+    expect((await run("git_commit_files", { cwd: root, sha: history.head })).result)
+      .toContainEqual(expect.objectContaining({ relative: "src/app.ts", additions: 1 }));
+    expect((await run("git_commit_file_diff", {
+      cwd: root, sha: history.head, relative: "src/app.ts",
+    })).result).toMatchObject({ original: "", current: "after\n", status: "added" });
+    expect((await run("git_worktrees", { cwd: root })).result.worktrees)
+      .toContainEqual(expect.objectContaining({ path: root, isMain: true }));
+
+    for (const path of [outside, `${root}/../outside`, `${root}/.git/config`])
+      expect((await run("read_text_file", { path })).error).toBeTruthy();
+    expect(
+      (await run("write_text_file", { path: join(outside, "x"), content: "x" }))
+        .error,
+    ).toContain("outside");
+    expect((await run("delete_path", { path: root })).error).toBeTruthy();
+    expect((await run("rm_rf", { path: root })).error).toContain("Unsupported");
+  });
+
   it("browses and commits changes in the host checkout", async () => {
     const s = await setup();
     const checkout = join(s.directory, "checkout");
@@ -451,11 +554,6 @@ describe("remote host API", () => {
         })
       ).value.result,
     ).toEqual([expect.objectContaining({ path: "src/app.ts" })]);
-    expect(
-      (
-        await s.call("files.index", { projectId: project.id })
-      ).value.result.sort(),
-    ).toEqual(["new.ts", "src/app.ts"]);
     expect(
       (
         await s.call("files.searchContent", {

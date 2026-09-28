@@ -12,6 +12,7 @@ import type { AgentModel } from "../../sessions/model/models";
 import { rememberRemoteProject } from "../model/remoteProjects";
 import { preloadRemoteSession } from "./RemoteSession";
 import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
+import "../model/remoteCommands";
 import type {
   HostCommand,
   HostModelCatalog,
@@ -29,15 +30,21 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
     busy,
     onSendDraft,
     onRemoveDraft,
+    onOpenFile,
+    onOpenDiff,
   }: {
     blocks: Block[];
     busy: boolean;
     onSendDraft?: (block: Block) => void;
     onRemoveDraft?: (block: Block) => void;
+    onOpenFile?: (path: string) => void;
+    onOpenDiff?: (path: string) => void;
   }) =>
     createElement(
       "ol",
       { "aria-label": "Transcript", "data-busy": busy },
+      createElement("button", { "aria-label": "Open transcript file", onClick: () => onOpenFile?.("src/app.ts") }),
+      createElement("button", { "aria-label": "Open transcript diff", onClick: () => onOpenDiff?.("src/app.ts") }),
       blocks.map((block) =>
         createElement(
           "li",
@@ -99,6 +106,7 @@ let catalog: HostModelCatalog | Error;
 let commands: HostCommand[];
 let projectKey: string;
 let syncDelay: Promise<void> | undefined;
+let dispatchDelay: Promise<void> | undefined;
 let branchFailure: string | undefined;
 let branchActionFailure: string | undefined;
 let currentBranch: string;
@@ -113,6 +121,7 @@ beforeEach(() => {
   commands = [];
   host = undefined;
   syncDelay = undefined;
+  dispatchDelay = undefined;
   branchFailure = undefined;
   branchActionFailure = undefined;
   currentBranch = "main";
@@ -133,6 +142,11 @@ beforeEach(() => {
       method: string;
       params: HostCommand & { sessionId?: string };
     };
+    const workspace = method === "workspace.run"
+      ? params as unknown as { command: string; args: Record<string, unknown> }
+      : undefined;
+    const operation = workspace?.command ?? method;
+    const commandParams = workspace?.args ?? params;
     if (method === "environment.describe")
       return {
         protocolVersion: 1,
@@ -145,14 +159,20 @@ beforeEach(() => {
       if (catalog instanceof Error) throw catalog.message;
       return catalog;
     }
-    if (method === "git.branches") {
+    if (operation === "git.branches" || operation === "git_branches") {
       if (branchFailure) throw new Error(branchFailure);
+      if (workspace) return {
+        current: currentBranch,
+        detached: false,
+        branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])]
+          .map((name) => ({ name, current: name === currentBranch, remote: null })),
+      };
       return {
         current: currentBranch,
         branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])],
       };
     }
-    if (method === "git.worktrees")
+    if (operation === "git.worktrees" || operation === "git_worktrees")
       return {
         defaultRoot: "/home/me/repo-worktrees",
         worktrees: [
@@ -194,10 +214,12 @@ beforeEach(() => {
         missing: false,
       };
     }
-    if (method === "git.switch" || method === "git.createBranch") {
+    if (operation === "git.switch" || operation === "git.createBranch" ||
+        operation === "git_checkout" || operation === "git_create_branch") {
       if (branchActionFailure) throw new Error(branchActionFailure);
-      currentBranch = params.branch;
-      if (method === "git.createBranch") createdBranch = params.branch;
+      currentBranch = String(operation.startsWith("git_") ? commandParams.name : params.branch);
+      if (operation === "git.createBranch" || operation === "git_create_branch") createdBranch = currentBranch;
+      if (workspace) return currentBranch;
       return {
         current: params.branch,
         branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])],
@@ -209,7 +231,10 @@ beforeEach(() => {
     }
     if (method === "attachments.upload")
       return { offset: (params as { size: number }).size };
-    if (method === "commands.dispatch") return dispatch(params);
+    if (method === "commands.dispatch") {
+      if (dispatchDelay) await dispatchDelay;
+      return dispatch(params);
+    }
     if (method === "sessions.delete") {
       deletedSessions.push(params.sessionId!);
       host = undefined;
@@ -380,7 +405,7 @@ it("uses the normal composer with the host branch in its top row", async () => {
   expect(container.querySelector("textarea")).not.toBeNull();
   // The machine is named in the project rail, not the composer.
   expect(container.textContent).not.toContain("Home server");
-  expect(byLabel("Host branch main")).not.toBeNull();
+  expect(byLabel("Branch main")).not.toBeNull();
   expect(
     [...container.querySelectorAll("button")].some(
       (button) => button.textContent === "Changes",
@@ -401,6 +426,17 @@ it("uses the normal composer with the host branch in its top row", async () => {
   expect(document.body.textContent).toContain("Draft");
   expect(document.body.textContent).not.toContain("Operator");
   expect(byLabel("Project ")).toBeNull();
+});
+
+it("opens transcript files and diffs through the shared remote tabs", async () => {
+  const onOpenFile = vi.fn();
+  const onOpenDiff = vi.fn();
+  await render(shell(), { onOpenFile, onOpenDiff });
+  await send("Inspect files");
+  await act(async () => byLabel("Open transcript file")!.click());
+  await act(async () => byLabel("Open transcript diff")!.click());
+  expect(onOpenFile).toHaveBeenCalledWith("remote://env/home/me/repo/src/app.ts");
+  expect(onOpenDiff).toHaveBeenCalledWith("remote://env/home/me/repo/src/app.ts");
 });
 
 it("opens a host conversation in an already mounted empty tab", async () => {
@@ -508,20 +544,12 @@ it("shows a preloaded conversation's transcript on its first render", async () =
   expect(container.textContent).not.toContain("What should we work on?");
 });
 
-it("keeps the branch picker visible when Git lookup fails and offers a retry", async () => {
+it("shows an unavailable branch when Git lookup fails", async () => {
   branchFailure = "fatal: not a git repository";
   await render();
-  const picker = byLabel("Host branch No repo");
+  const picker = byLabel("No git repository");
   expect(picker).not.toBeNull();
-  await act(async () => picker!.click());
-  expect(document.body.textContent).toContain("not a git repository");
-  branchFailure = undefined;
-  const retry = [
-    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
-  ].find((button) => button.textContent === "Retry");
-  await act(async () => retry!.click());
-  await settle();
-  expect(byLabel("Host branch main")).not.toBeNull();
+  expect((picker as HTMLButtonElement).disabled).toBe(true);
 });
 
 it("creates the host session with the chosen settings on the first message", async () => {
@@ -666,6 +694,27 @@ it("keeps a sent message visible until the host sync confirms it", async () => {
   expect(secondMessages()).toHaveLength(1);
 });
 
+it("does not flash a status banner while an ordinary message is in flight", async () => {
+  await render();
+  await send("First");
+  let releaseDispatch = () => {};
+  dispatchDelay = new Promise<void>((resolve) => {
+    releaseDispatch = resolve;
+  });
+
+  await type("Second");
+  await act(async () => byLabel("Send")!.click());
+  expect(container.textContent).toContain("Second");
+  expect(container.textContent).not.toContain("Waiting for the host to confirm");
+
+  await act(async () => {
+    releaseDispatch();
+    dispatchDelay = undefined;
+  });
+  await settle();
+  expect(commands.at(-1)).toMatchObject({ type: "send", text: "Second" });
+});
+
 it("keeps the first turn active while its accepted message awaits host sync", async () => {
   await render();
   let releaseSync = () => {};
@@ -697,7 +746,7 @@ it("starts a remote session in the worktree chosen before its first message", as
   await settle();
   const worktree = [
     ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-  ].find((button) => button.title === "/home/me/repo-worktrees/dev");
+  ].find((button) => button.title === "remote://env/home/me/repo-worktrees/dev");
   expect(worktree).toBeDefined();
   await act(async () => worktree!.click());
   await send("Work in dev");
@@ -715,7 +764,7 @@ it("creates a host worktree through the composer and selects it", async () => {
     document.body.querySelector('[aria-label="Workspace"]'),
   ).not.toBeNull();
   expect(document.body.textContent).toContain("Existing worktree…");
-  expect(document.body.textContent).toContain("Worktree settings");
+  expect(document.body.textContent).not.toContain("Worktree settings");
   expect(
     document.body.querySelector('[aria-label="Existing worktrees"]'),
   ).toBeNull();
@@ -728,7 +777,7 @@ it("creates a host worktree through the composer and selects it", async () => {
   await act(async () => create!.click());
   expect(byLabel("Workspace New worktree")).not.toBeNull();
   expect(byLabel("Create worktree from main")).not.toBeNull();
-  expect(byLabel("Host branch main")).toBeNull();
+  expect(byLabel("Branch main")).toBeNull();
   await act(async () => byLabel("Create worktree from main")!.click());
   const devBase = [
     ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
@@ -762,9 +811,9 @@ it("creates a host worktree through the composer and selects it", async () => {
 
 it("searches and creates a host branch from the composer picker", async () => {
   await render();
-  await act(async () => byLabel("Host branch main")!.click());
+  await act(async () => byLabel("Branch main")!.click());
   const search = document.body.querySelector<HTMLInputElement>(
-    'input[aria-label="Search or create a host branch"]',
+    'input[aria-label="Search or create a branch"]',
   )!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(
@@ -783,28 +832,31 @@ it("searches and creates a host branch from the composer picker", async () => {
   expect(invoke).toHaveBeenCalledWith(
     "remote_request",
     expect.objectContaining({
-      method: "git.createBranch",
+      method: "workspace.run",
       params: expect.objectContaining({
-        branch: "feature/test",
-        cwd: "/home/me/repo",
+        command: "git_create_branch",
+        args: expect.objectContaining({
+          name: "feature/test",
+          cwd: "/home/me/repo",
+        }),
       }),
     }),
   );
-  expect(byLabel("Host branch feature/test")).not.toBeNull();
+  expect(byLabel("Branch feature/test")).not.toBeNull();
 });
 
 it("keeps a failed host branch action in the picker", async () => {
   branchActionFailure =
     "Commit or stash changes on the host before switching branches";
   await render();
-  await act(async () => byLabel("Host branch main")!.click());
+  await act(async () => byLabel("Branch main")!.click());
   const dev = [
     ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
   ].find((button) => button.textContent?.includes("dev"));
   await act(async () => dev!.click());
   await settle();
   expect(
-    document.body.querySelector('[aria-label="Host branches"]'),
+    document.body.querySelector('[aria-label="Branch picker"]'),
   ).not.toBeNull();
   expect(document.body.textContent).toContain(branchActionFailure);
 });
@@ -837,7 +889,7 @@ it("opens another tab when a started session selects a different worktree", asyn
   await settle();
   const worktree = [
     ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-  ].find((button) => button.title === "/home/me/repo-worktrees/dev");
+  ].find((button) => button.title === "remote://env/home/me/repo-worktrees/dev");
   await act(async () => worktree!.click());
   expect(onOpenRemoteWorktree).toHaveBeenCalledWith(
     projectKey,

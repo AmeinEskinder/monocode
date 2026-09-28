@@ -90,7 +90,7 @@ export function surfaceTabMenuItems(
     label: "Close Others",
     disabled: !canCloseOthers,
   };
-  if (!isFilesystemTab(file) || isChangesTab(file) || file.remoteFile) {
+  if (!isFilesystemTab(file) || isChangesTab(file)) {
     return [close, closeOthers];
   }
 

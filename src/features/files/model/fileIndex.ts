@@ -2,7 +2,7 @@ import { listProjectFiles, type ProjectFile } from "../../../platform/tauri/fs";
 import { subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
-import { isLocalProject } from "../../projects/model/recents";
+import { looksLikeProject } from "../../projects/model/recents";
 import { normalizeEditorPath, type FileOpenOptions } from "../../search/model/search";
 
 const MAX_RECENTS = 30;
@@ -108,7 +108,7 @@ export function recentOpenedFiles(cwd: string): string[] {
 }
 
 export function prefetchProjectFiles(cwd: string) {
-  if (!isLocalProject(cwd)) return;
+  if (!looksLikeProject(cwd)) return;
   void loadProjectFiles(cwd);
 }
 
@@ -116,7 +116,7 @@ export function loadProjectFiles(
   cwd: string,
   refresh = false,
 ): Promise<ProjectFile[]> {
-  if (!isLocalProject(cwd)) return Promise.resolve([]);
+  if (!looksLikeProject(cwd)) return Promise.resolve([]);
   lastCwd = cwd;
   if (!refresh && cache?.cwd === cwd) return Promise.resolve(cache.files);
   if (!refresh && inflight?.cwd === cwd) return inflight.promise;

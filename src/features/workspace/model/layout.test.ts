@@ -33,7 +33,6 @@ import {
   openSessionChangesTab,
   pinEditorFile,
   openWorkspaceFile,
-  openRemoteChangesTab,
   openTerminalTab,
   paneEdgeFromPoint,
   placePane,
@@ -45,43 +44,23 @@ import {
 
 describe("preview tabs", () => {
   it("keeps remote files from different machines in distinct editor tabs", () => {
-    const first = {
-      ...newFileTab("/repo/a.ts", "/repo"),
-      remoteFile: {
-        machineId: "machine-a",
-        projectId: "project",
-        relativePath: "a.ts",
-      },
-    };
-    const second = {
-      ...newFileTab("/repo/a.ts", "/repo"),
-      remoteFile: {
-        machineId: "machine-b",
-        projectId: "project",
-        relativePath: "a.ts",
-      },
-    };
+    const first = newFileTab("remote://machine-a/repo/a.ts", "remote://machine-a/repo");
+    const second = newFileTab("remote://machine-b/repo/a.ts", "remote://machine-b/repo");
     expect(editorTabKey(first)).not.toBe(editorTabKey(second));
     let tab = openEditorTab(newTab("s"), first, { pin: true });
     tab = openEditorTab(tab, second, { pin: true });
     expect(tab.editorPanes[0]?.files).toHaveLength(2);
   });
-  it("keeps host file and review tabs distinct and retargets one unified review", () => {
-    const ordinary = {
-      ...newFileTab("/repo/a.ts", "/repo"),
-      remoteFile: {
-        machineId: "machine",
-        projectId: "project",
-        relativePath: "a.ts",
-      },
-    };
+  it("keeps remote file and review tabs distinct and retargets one unified review", () => {
+    const cwd = "remote://machine/repo";
+    const ordinary = newFileTab(`${cwd}/a.ts`, cwd);
     const review = {
       ...ordinary,
       id: crypto.randomUUID(),
       review: true,
       changeKind: "staged" as const,
     };
-    const changes = { ...review, id: crypto.randomUUID(), changes: true };
+    const changes = newChangesTab(cwd, `${cwd}/a.ts`, "staged");
     expect(editorTabKey(ordinary)).not.toBe(editorTabKey(review));
     expect(editorTabKey(review)).not.toBe(editorTabKey(changes));
     let tab = openEditorTab(newTab("s"), ordinary, { pin: true });
@@ -92,20 +71,13 @@ describe("preview tabs", () => {
         .flatMap((pane) => pane.files)
         .find((file) => file.review && !file.changes)?.changeKind,
     ).toBe("unstaged");
-    tab = openRemoteChangesTab(tab, changes);
-    tab = openRemoteChangesTab(tab, {
-      ...changes,
-      id: crypto.randomUUID(),
-      path: "/repo/b.ts",
-      changeKind: "unstaged",
-      remoteFile: { ...changes.remoteFile, relativePath: "b.ts" },
-    });
+    tab = openChangesTab(tab, cwd, `${cwd}/a.ts`, "staged");
+    tab = openChangesTab(tab, cwd, `${cwd}/b.ts`, "unstaged");
     const open = tab.editorPanes.flatMap((pane) => pane.files);
     expect(open).toHaveLength(2);
     expect(open.find((file) => file.changes)).toMatchObject({
-      path: "/repo/b.ts",
+      path: `${cwd}/b.ts`,
       changeKind: "unstaged",
-      remoteFile: { relativePath: "b.ts" },
     });
   });
   const paths = (tab: WorkspaceTab) =>

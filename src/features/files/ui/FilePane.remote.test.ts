@@ -11,38 +11,20 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("../../connections/ui/RemoteFileEditor", async () => {
-  const React = await import("react");
-  return {
-    RemoteFileEditor: () =>
-      React.createElement(
-        "div",
-        { "data-remote-editor": true },
-        "Remote editor",
-      ),
-  };
-});
 vi.mock("./FileEditor", async () => {
   const React = await import("react");
   return {
     FileEditor: () =>
-      React.createElement("div", { "data-local-editor": true }, "Local editor"),
+      React.createElement("div", { "data-shared-editor": true }, "Editor"),
   };
 });
 
-it("renders a host file in the normal pane without invoking the local editor", async () => {
+it("renders a remote path in the shared editor", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  const file = {
-    ...newFileTab("/repo/src/index.ts", "/repo"),
-    remoteFile: {
-      machineId: "machine",
-      projectId: "project",
-      relativePath: "src/index.ts",
-    },
-  };
+  const file = newFileTab("remote://env/repo/src/index.ts", "remote://env/repo");
   const noop = () => {};
   const props: ComponentProps<typeof FilePane> = {
     pane: newEditorPane(file),
@@ -63,8 +45,7 @@ it("renders a host file in the normal pane without invoking the local editor", a
     onBuildPlan: noop,
   };
   await act(async () => root.render(createElement(FilePane, props)));
-  expect(container.querySelector("[data-remote-editor]")).not.toBeNull();
-  expect(container.querySelector("[data-local-editor]")).toBeNull();
+  expect(container.querySelector("[data-shared-editor]")).not.toBeNull();
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();

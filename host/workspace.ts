@@ -25,7 +25,7 @@ import type {
 const exec = promisify(execFile);
 const MAX_FILE = 1024 * 1024;
 
-function workspacePath(
+export function workspacePath(
   root: string,
   input: unknown,
   allowRoot = false,
@@ -45,7 +45,7 @@ function workspacePath(
   return path;
 }
 
-async function existingPath(root: string, input: unknown, allowRoot = false) {
+export async function existingPath(root: string, input: unknown, allowRoot = false) {
   const path = workspacePath(root, input, allowRoot);
   const actual = await realpath(path);
   const rel = relative(root, actual);
@@ -163,8 +163,8 @@ export async function listHostFiles(
   );
 }
 
-/** Upper bound on paths sent for Go to File; larger trees are truncated. */
-const MAX_INDEXED_FILES = 50_000;
+/** Upper bound on paths sent for Go to File, as for a local project. */
+const MAX_INDEXED_FILES = 20_000;
 
 /** Every file in the worktree, honoring .gitignore when it is a repository. */
 async function hostFilePaths(root: string): Promise<string[]> {
@@ -584,7 +584,7 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
       "refs/remotes/origin/HEAD",
     ]).catch(() => ""),
   ]);
-  const [behind, ahead] = countsText.trim().split(/\s+/).map(Number);
+  let [behind, ahead] = countsText.trim().split(/\s+/).map(Number);
   let defaultBranch = defaultText.trim().replace(/^origin\//, "");
   if (!defaultBranch && remoteText.trim()) {
     for (const name of ["main", "master"]) {
@@ -602,6 +602,15 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
       }
     }
   }
+  if (!upstreamText.trim() && defaultBranch) {
+    const fallback = await git(root, [
+      "rev-list", "--left-right", "--count", `origin/${defaultBranch}...HEAD`,
+    ]).catch(() => "");
+    [behind, ahead] = fallback.trim().split(/\s+/).map(Number);
+  }
+  const headPushed = Boolean((await git(root, [
+    "for-each-ref", "--count=1", "--contains", "HEAD", "refs/remotes",
+  ]).catch(() => "")).trim());
   const aheadOfDefault = defaultBranch
     ? Number(
         (
@@ -667,7 +676,7 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
     ahead: ahead || 0,
     behind: behind || 0,
     aheadOfDefault,
-    headPushed: false,
+    headPushed,
   };
 }
 

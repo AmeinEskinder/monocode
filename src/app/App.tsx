@@ -155,7 +155,6 @@ import {
   newTerminalWorkspaceTab,
   nextTerminalTitle,
   openChangesTab,
-  openRemoteChangesTab,
   openCommitTab,
   newAgentTab,
   openEditorTab,
@@ -541,22 +540,16 @@ import {
   rememberRemotePendingWorktree,
   rememberRemoteSession,
   remotePendingWorktree,
+  remoteTabCwd,
   knownRemoteMachine,
   remoteSessionFor,
-  useRemoteMachines,
 } from "../features/connections/model/connections";
 import { preloadRemoteSession } from "../features/connections/ui/RemoteSession";
-import {
-  remoteTabCwd,
-  type RemoteFileSource,
-} from "../features/connections/model/remoteFileIndex";
-import { remoteProjectFor } from "../features/connections/model/remoteProjects";
+import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
+import { remoteSessionState } from "../features/connections/model/remoteSessionState";
+import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
-import {
-  remoteFilePath,
-  type RemoteFileTarget,
-} from "../features/connections/model/remoteFiles";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import { InboxView, LinkedWorkItemPanel } from "../features/inbox/ui/InboxView";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -1457,30 +1450,18 @@ export default function App({
     active?.worktreeCwd && sameProjectPath(gitCwd, sessionWorkCwd(active))
       ? active.branch || gitCwdBranches?.current || undefined
       : undefined;
-  const gitCwdRef = useRef(gitCwd);
-  gitCwdRef.current = gitCwd;
-  // Go to File in a project on another machine lists the checkout the
-  // sidebar's Explorer shows: the tab's worktree, else the project folder.
-  const filePickerRemote = filePickerOpen
-    ? remoteProjectFor(sidebarCwd)
-    : undefined;
-  const { machines: remoteMachines } = useRemoteMachines(!!filePickerRemote);
-  const filePickerMachine = filePickerRemote
-    ? remoteMachines.find(
-        (machine) => machine.environmentId === filePickerRemote.environmentId,
-      )
-    : undefined;
-  const filePickerRemoteSource: RemoteFileSource | undefined =
-    filePickerRemote && filePickerMachine
-      ? {
-          machineId: filePickerMachine.id,
-          projectId: filePickerRemote.projectId,
-          projectKey: filePickerRemote.key,
-          cwd:
-            remoteTabCwd(filePickerRemote.key, active?.id) ??
-            (gitCwd && gitCwd !== sidebarCwd ? gitCwd : filePickerRemote.cwd),
-        }
-      : undefined;
+  const remoteFilesProject = remoteProjectFor(sidebarCwd);
+  const filesCwd = remoteFilesProject
+    ? isRemoteProjectPath(gitCwd)
+      ? gitCwd
+      : remotePath(
+          remoteFilesProject.environmentId,
+          remoteTabCwd(sidebarCwd, active?.id) ??
+            (gitCwd && gitCwd !== sidebarCwd ? gitCwd : remoteFilesProject.cwd),
+        )
+    : gitCwd;
+  const gitCwdRef = useRef(filesCwd);
+  gitCwdRef.current = filesCwd;
   const projectBranches = useProjectBranches(
     sidebarCwd,
     Boolean(sidebarCwd) && sidebarCwd !== "~",
@@ -5379,7 +5360,7 @@ export default function App({
           editorPanes: tab.editorPanes.map((pane) => ({
             ...pane,
             files: pane.files.map((file) =>
-              isFilesystemTab(file) && !file.remoteFile
+              isFilesystemTab(file)
                 ? { ...file, path: rebasePath(file.path, from, to) }
                 : file,
             ),
@@ -5462,7 +5443,6 @@ export default function App({
         for (const file of pane.files) {
           if (
             isFilesystemTab(file) &&
-            !file.remoteFile &&
             isEqualOrInside(file.path, path)
           ) {
             dropped.add(file.id);
@@ -5560,92 +5540,6 @@ export default function App({
         }
         setComposerFocused(false);
       })();
-    },
-    [activateTab, insertBesideActive],
-  );
-
-  const onOpenRemoteFile = useCallback(
-    (target: RemoteFileTarget) => {
-      const tab = tabsRef.current.find(
-        (entry) => entry.id === activeTabIdRef.current,
-      );
-      if (!tab) return;
-      const file = {
-        ...newFileTab(
-          remoteFilePath(target),
-          target.cwd,
-          !!target.changeKind,
-          target.changeKind,
-          target.projectKey,
-        ),
-        ...(target.changeKind && loadDiffViewer() === "unified"
-          ? { changes: true }
-          : {}),
-        remoteFile: {
-          machineId: target.machineId,
-          projectId: target.projectId,
-          relativePath: target.relativePath,
-        },
-      };
-      if (target.changeKind) {
-        setTabs((previous) =>
-          previous.map((entry) =>
-            entry.id === tab.id
-              ? file.changes
-                ? openRemoteChangesTab(entry, file)
-                : openEditorTab(entry, file, { pin: target.pin })
-              : entry,
-          ),
-        );
-        setSidebarTab("changes", target.projectKey);
-        setComposerFocused(false);
-        return;
-      }
-      if (loadFileTabMode() === "workspace") {
-        const created = newEditorWorkspaceTab({
-          ...file,
-          preview: !target.pin,
-        });
-        let opened: { tabId: string; paneId?: string } | undefined;
-        flushSync(() => {
-          setTabs((previous) => {
-            const result = openWorkspaceFile(
-              previous,
-              file,
-              created,
-              (tabs, next) => insertBesideActive(tabs, next, target.projectKey),
-              target.pin,
-            );
-            opened = result;
-            return result.tabs;
-          });
-        });
-        if (opened?.paneId) activateTab(opened.tabId, opened.paneId);
-        else if (opened) setActiveTabId(opened.tabId);
-        setProjectTerminalFocused(false);
-      } else {
-        setTabs((previous) =>
-          previous.map((entry) => {
-            if (entry.id !== tab.id) return entry;
-            const focusedSession = sessionsRef.current.find(
-              (session) => session.id === entry.focusedId,
-            );
-            return openEditorTab(entry, file, {
-              split: focusedSession?.blocks.length === 0 ? "left" : "right",
-              pin: target.pin,
-            });
-          }),
-        );
-      }
-      if (target.navigation) {
-        editorNavigationToken.current += 1;
-        setEditorNavigation({
-          path: file.path,
-          ...target.navigation,
-          token: editorNavigationToken.current,
-        });
-      }
-      setComposerFocused(false);
     },
     [activateTab, insertBesideActive],
   );
@@ -5811,6 +5705,8 @@ export default function App({
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
+      if (current && remoteProjectFor(current.cwd))
+        return !!remoteSessionActions(sessionId)?.saveDraft(text, attachments);
       if (
         !current ||
         current.busy ||
@@ -5897,6 +5793,9 @@ export default function App({
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      const remote = sessionsRef.current.find((session) => session.id === sessionId);
+      if (remote && remoteProjectFor(remote.cwd))
+        return !!remoteSessionActions(sessionId)?.submit(text, attachments, options);
       if (editedResends.isActive(sessionId)) return false;
       const controlError = orchestrator.submissionError(
         sessionId,
@@ -7322,6 +7221,7 @@ export default function App({
     (sessionId: string, blockId: string, text: string) => {
       setSessions((prev) =>
         prev.map((session) => {
+          if (remoteProjectFor(session.cwd)) return session;
           if (session.id !== sessionId || session.busy) return session;
           return {
             ...session,
@@ -7359,6 +7259,10 @@ export default function App({
       const session = sessionsRef.current.find(
         (entry) => entry.id === sessionId,
       );
+      if (session && remoteProjectFor(session.cwd)) {
+        buildRemotePlan(sessionId, blockId, target);
+        return;
+      }
       const block = session?.blocks.find((entry) => entry.id === blockId);
       if (
         !session ||
@@ -8325,6 +8229,8 @@ export default function App({
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
+      if (current && remoteProjectFor(current.cwd))
+        return remoteSessionActions(sessionId)?.compact() ?? false;
       if (!current || current.busy || current.worktreeRemoved) return false;
       if (!canCompactHarnessContext(current.harness)) {
         const unsupported = sessionsRef.current.map((session) =>
@@ -8406,6 +8312,11 @@ export default function App({
 
   const onStop = useCallback(
     (sessionId: string, managed = false) => {
+      const remote = sessionsRef.current.find((s) => s.id === sessionId);
+      if (remote && remoteProjectFor(remote.cwd)) {
+        remoteSessionActions(sessionId)?.stop();
+        return;
+      }
       if (!managed) {
         const stopping = orchestrator.stopForSession(sessionId);
         if (stopping) {
@@ -8495,6 +8406,10 @@ export default function App({
     (sessionId: string, requestId: number, decision: ApprovalDecision) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
+      if (remoteProjectFor(session.cwd)) {
+        remoteSessionActions(sessionId)?.approve(requestId, decision);
+        return;
+      }
       respondHarnessApproval(session.harness, sessionId, requestId, decision);
     },
     [],
@@ -8504,6 +8419,10 @@ export default function App({
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
+      if (remoteProjectFor(session.cwd)) {
+        remoteSessionActions(sessionId)?.answer(requestId, reply);
+        return;
+      }
       respondHarnessQuestion(session.harness, sessionId, requestId, reply);
     },
     [],
@@ -8512,6 +8431,7 @@ export default function App({
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (session && remoteProjectFor(session.cwd)) return;
       if (session && !session.worktreeRemoved)
         keepHarnessQuestionOpen(session.harness, sessionId, requestId);
     },
@@ -9781,7 +9701,7 @@ export default function App({
     for (const tab of tabs) {
       for (const pane of tab.editorPanes) {
         for (const file of pane.files) {
-          if (!isFilesystemTab(file) || file.remoteFile || seen.has(file.path))
+          if (!isFilesystemTab(file) || seen.has(file.path))
             continue;
           seen.add(file.path);
           paths.push(file.path);
@@ -10294,25 +10214,24 @@ export default function App({
     );
   }, [currentProjectDock, dockVisible]);
 
-  const onRemoteSnapshot = useCallback((shellId: string, snapshot: HostSession) => {
+  const lastRemoteSnapshot = useRef(new Map<string, HostSession>());
+  const onRemoteSnapshot = useCallback((shellId: string, snapshot?: HostSession) => {
+    if (!snapshot) {
+      lastRemoteSnapshot.current.delete(shellId);
+      setSessions((current) => current.map((entry) => entry.id === shellId
+        ? { ...entry, title: "New remote session", blocks: [], busy: false }
+        : entry));
+      return;
+    }
+    if (lastRemoteSnapshot.current.get(shellId) === snapshot) return;
+    lastRemoteSnapshot.current.set(shellId, snapshot);
     setSessions((current) => {
       const shell = current.find((entry) => entry.id === shellId);
       if (!shell) return current;
-      const host = snapshot.session;
-      if (
-        shell.title === host.title &&
-        shell.harness === host.harness &&
-        shell.model === host.model &&
-        shell.runtimeMode === host.runtimeMode
-      ) return current;
+      const project = remoteProjectFor(shell.cwd);
+      if (!project) return current;
       return current.map((entry) => entry.id === shellId
-        ? {
-            ...entry,
-            title: host.title,
-            harness: host.harness,
-            model: host.model,
-            runtimeMode: host.runtimeMode,
-          }
+        ? remoteSessionState(entry, snapshot, project)
         : entry);
     });
   }, []);
@@ -10457,7 +10376,6 @@ export default function App({
               onDeleteSession={onDeleteHistorySession}
               onDeleteSessions={onDeleteHistorySessions}
               onOpenFile={onOpenFile}
-              onOpenRemoteFile={onOpenRemoteFile}
               onOpenTerminal={onOpenTerminal}
               onFileMoved={onFileMoved}
               onFileDeleted={onFileDeleted}
@@ -10873,12 +10791,10 @@ export default function App({
             <FilePicker
               key={filePickerResetToken}
               open
-              cwd={filePickerRemote ? sidebarCwd : gitCwd}
+              cwd={filesCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
               onOpenFile={onOpenFile}
-              remote={filePickerRemoteSource}
-              onOpenRemoteFile={onOpenRemoteFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
               }}
@@ -11134,7 +11050,7 @@ function dropOpenFiles(
   for (const pane of tab.editorPanes) {
     const files = pane.files.filter(
       (file) =>
-        !isFilesystemTab(file) || !!file.remoteFile || !shouldDrop(file.path),
+        !isFilesystemTab(file) || !shouldDrop(file.path),
     );
     if (files.length === 0) {
       const sibling = siblingLeafId(layout, pane.id);

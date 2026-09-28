@@ -36,9 +36,10 @@ function chat(id: string, cwd: string): Session {
 }
 
 describe("project return snapshots", () => {
-  it("restores host file tabs without turning them into local file tabs", () => {
+  it("migrates saved host file tabs to shared remote paths", () => {
+    const project = "remote://env/repo";
     const file = {
-      ...newFileTab("/repo/src/index.ts", "/repo"),
+      ...newFileTab("/repo/src/index.ts", "/repo", false, undefined, project),
       remoteFile: {
         machineId: "machine",
         projectId: "project",
@@ -50,20 +51,23 @@ describe("project return snapshots", () => {
       [tab],
       [],
       tab.id,
-      "/repo",
+      project,
       new Map(),
     );
     const restored = parseWorkspaceSnapshot(snapshot);
-    expect(restored?.tabs[0].editorPanes[0].files[0].remoteFile).toEqual(
-      file.remoteFile,
-    );
+    expect(restored?.tabs[0].editorPanes[0].files[0]).toMatchObject({
+      path: "remote://env/repo/src/index.ts",
+      cwd: project,
+    });
+    expect(restored?.tabs[0].editorPanes[0].files[0].remoteFile).toBeUndefined();
     const malformed = JSON.parse(JSON.stringify(snapshot));
     malformed.tabs[0].editorPanes[0].files[0].remoteFile = { machineId: 42 };
     expect(parseWorkspaceSnapshot(malformed)).toBeNull();
   });
   it("restores a host diff tab with its review state", () => {
+    const project = "remote://env/repo";
     const file = {
-      ...newFileTab("/repo/a.ts", "/repo", true, "staged"),
+      ...newFileTab("/repo/a.ts", "/repo", true, "staged", project),
       remoteFile: {
         machineId: "machine",
         projectId: "project",
@@ -75,14 +79,14 @@ describe("project return snapshots", () => {
       [tab],
       [],
       tab.id,
-      "/repo",
+      project,
       new Map(),
     );
     const restored = parseWorkspaceSnapshot(snapshot);
     expect(restored?.tabs[0].editorPanes[0].files[0]).toMatchObject({
       review: true,
       changeKind: "staged",
-      remoteFile: file.remoteFile,
+      path: "remote://env/repo/a.ts",
     });
   });
   function saved() {

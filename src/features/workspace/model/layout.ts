@@ -61,12 +61,6 @@ export type FilePaneTab = {
   cwd: string;
   /** Owning project when cwd points at one of its linked worktrees. */
   projectCwd?: string;
-  /** Host-backed file; its contents are never resolved through local filesystem commands. */
-  remoteFile?: {
-    machineId: string;
-    projectId: string;
-    relativePath: string;
-  };
   plan?: PlanTabSource;
   releaseNotes?: ReleaseNotesTabSource;
   review?: boolean;
@@ -518,8 +512,6 @@ export function isSessionChangesTab(
 }
 
 export function editorTabKey(file: FilePaneTab): string {
-  if (file.remoteFile)
-    return `remote:${file.remoteFile.machineId}:${file.remoteFile.projectId}:${file.cwd}:${file.changes ? "changes" : file.review ? "review" : "file"}:${file.changes ? "" : file.remoteFile.relativePath}`;
   if (file.terminal) return `terminal:${file.id}`;
   if (file.agent) return `agent:${file.agent.sessionId}`;
   if (file.plan) return `plan:${file.plan.blockId}`;
@@ -728,46 +720,6 @@ export function openChangesTab(
             ...pane,
             files: dropPerFileReviewTabs(pane.files, cwd),
             activeFileId: pane.files.find(matches)?.id ?? pane.activeFileId,
-          }
-        : pane,
-    ),
-  };
-}
-
-/** Reuse one host-backed Changes review while updating its focused file. */
-export function openRemoteChangesTab(
-  tab: WorkspaceTab,
-  file: FilePaneTab & { remoteFile: NonNullable<FilePaneTab["remoteFile"]> },
-): WorkspaceTab {
-  const opened = openEditorTab(tab, file);
-  const key = editorTabKey(file);
-  return {
-    ...opened,
-    editorPanes: opened.editorPanes.map((pane) =>
-      pane.files.some((entry) => editorTabKey(entry) === key)
-        ? {
-            ...pane,
-            files: pane.files
-              .filter(
-                (entry) =>
-                  !(
-                    entry.review &&
-                    !entry.changes &&
-                    entry.remoteFile?.machineId === file.remoteFile.machineId &&
-                    entry.remoteFile?.projectId === file.remoteFile.projectId &&
-                    entry.cwd === file.cwd
-                  ),
-              )
-              .map((entry) =>
-                editorTabKey(entry) === key
-                  ? {
-                      ...entry,
-                      path: file.path,
-                      changeKind: file.changeKind,
-                      remoteFile: file.remoteFile,
-                    }
-                  : entry,
-              ),
           }
         : pane,
     ),

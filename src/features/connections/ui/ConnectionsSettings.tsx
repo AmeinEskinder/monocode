@@ -133,10 +133,8 @@ export function ConnectionsSettings() {
               if (!host.providers.length)
                 label = "Connected · install Codex or Claude on the host";
               const update =
-                !host.capabilities?.includes("git.index") ||
-                !host.capabilities?.includes("files.list") ||
-                !host.capabilities?.includes("files.create") ||
-                !host.capabilities?.includes("files.searchContent");
+                !host.capabilities?.includes("workspace.run") ||
+                !host.capabilities?.includes("git.worktreeCreate");
               if (update)
                 label =
                   "Connected · host update needed for Explorer and Changes";

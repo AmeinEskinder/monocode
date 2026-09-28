@@ -1,4 +1,5 @@
 import { pathKey, prettyCwd, slash } from "../../../shared/lib/paths";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 
 const KEY = "monocode.recentProjects";
 const RAIL_ORDER_KEY = "monocode.projectRailOrder";
@@ -391,7 +392,7 @@ export function projectRailItems(
 /** True if this looks like a user project, not an app bundle or system root. */
 /** Projects on another machine use `remote://<host id>/<host path>` keys. They
  * appear in the rail like any project, but are never folders on this computer. */
-export const REMOTE_PROJECT_PREFIX = "remote://";
+export const REMOTE_PROJECT_PREFIX = REMOTE_PATH_PREFIX;
 
 export function isRemoteProjectPath(path: string): boolean {
   return slash(path).startsWith(REMOTE_PROJECT_PREFIX);
