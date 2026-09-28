@@ -175,6 +175,13 @@ export async function loadRemoteSession(
   }
 }
 
+/** The connected machine for an environment, from the last machine list read. */
+export function knownRemoteMachine(
+  environmentId: string,
+): RemoteMachine | undefined {
+  return cachedMachines.find((entry) => entry.environmentId === environmentId);
+}
+
 export async function connectMachine(
   name: string,
   url: string,

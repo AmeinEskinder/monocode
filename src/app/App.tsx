@@ -541,9 +541,11 @@ import {
   rememberRemotePendingWorktree,
   rememberRemoteSession,
   remotePendingWorktree,
+  knownRemoteMachine,
   remoteSessionFor,
   useRemoteMachines,
 } from "../features/connections/model/connections";
+import { preloadRemoteSession } from "../features/connections/ui/RemoteSession";
 import {
   remoteTabCwd,
   type RemoteFileSource,
@@ -2199,13 +2201,15 @@ export default function App({
     projectCwd,
   ]);
 
+  const remoteOpenRequest = useRef(0);
   const onSelectRemoteSession = useCallback(
-    (project: string, remoteSessionId: string) => {
+    async (project: string, remoteSessionId: string) => {
+      const request = ++remoteOpenRequest.current;
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
       setAutomationsViewOpen(false);
-      const existing = tabs
+      const existing = tabsRef.current
         .map((tab) => ({
           tab,
           shellId: leafIds(tab.layout).find(
@@ -2217,9 +2221,22 @@ export default function App({
         activateTab(existing.tab.id, existing.shellId);
         return;
       }
+      // Like a local session, switch once the transcript is here so the pane
+      // never shows an empty conversation first. A slow host still opens
+      // after a moment and fills in when its reply arrives.
+      const remote = remoteProjectFor(project);
+      const machine = remote && knownRemoteMachine(remote.environmentId);
+      if (machine) {
+        await Promise.race([
+          preloadRemoteSession(machine.id, remoteSessionId).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 1_500)),
+        ]);
+        if (request !== remoteOpenRequest.current) return;
+      }
+      const tabs = tabsRef.current;
       const blankTab =
         tabs.find((tab) =>
-          tab.id === activeTabId &&
+          tab.id === activeTabIdRef.current &&
           sameProjectPath(project, workspaceTabCwd(tab, sessionsRef.current) ?? "") &&
           isBlankWorkspaceTab(tab, sessionsRef.current),
         ) ??
@@ -2241,7 +2258,7 @@ export default function App({
       appendTab(tab, project);
       setActiveTabId(tab.id);
     },
-    [activateTab, activeTabId, appendTab, sessionDefaults?.runtimeMode, tabs],
+    [activateTab, appendTab, sessionDefaults?.runtimeMode],
   );
 
   const onOpenRemoteWorktree = useCallback(

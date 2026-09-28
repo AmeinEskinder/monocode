@@ -10,6 +10,7 @@ import {
 import type { Block, Session } from "../../sessions/model/session";
 import type { AgentModel } from "../../sessions/model/models";
 import { rememberRemoteProject } from "../model/remoteProjects";
+import { preloadRemoteSession } from "./RemoteSession";
 import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
 import type {
   HostCommand,
@@ -458,6 +459,46 @@ it("keeps an unopened remote conversation docked while its transcript loads", as
   await settle();
   expect(container.textContent).toContain("Earlier message");
   expect(container.querySelector("[data-session-composer]")).toBe(composer);
+});
+
+it("shows a preloaded conversation's transcript on its first render", async () => {
+  dispatch({
+    type: "create",
+    commandId: "existing-session",
+    projectId: "project",
+    harness: "codex",
+    model: gpt.id,
+    runtimeMode: "supervised",
+  });
+  host = {
+    ...host!,
+    session: {
+      ...host!.session,
+      id: "preloaded-session",
+      blocks: [{ id: "old-message", role: "user", text: "Earlier message" }],
+    },
+  };
+  await preloadRemoteSession(machine.id, "preloaded-session");
+  rememberRemoteSession("shell", "preloaded-session");
+  // Hold every later sync: what shows must come from the preload alone.
+  syncDelay = new Promise<void>(() => {});
+
+  await act(async () =>
+    root.render(
+      createElement(SessionPane, {
+        session: shell(),
+        visible: true,
+        focused: true,
+        inSplit: false,
+        composerFocused: false,
+        recents: [],
+        onFocus: vi.fn(),
+        onClose: vi.fn(),
+      } as unknown as SessionPaneProps),
+    ),
+  );
+  expect(container.textContent).toContain("Earlier message");
+  expect(container.textContent).not.toContain("What should we work on?");
 });
 
 it("keeps the branch picker visible when Git lookup fails and offers a retry", async () => {

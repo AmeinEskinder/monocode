@@ -109,6 +109,17 @@ function rememberSessionSnapshot(key: string, snapshot: HostSession) {
     cachedSessionSnapshots.delete(cachedSessionSnapshots.keys().next().value!);
 }
 
+/** Fetches a host conversation into the snapshot cache, so its tab opens with
+ * the transcript already laid out, as a local session read from disk does. */
+export async function preloadRemoteSession(
+  machineId: string,
+  sessionId: string,
+): Promise<void> {
+  const key = snapshotKey(machineId, sessionId);
+  if (cachedSessionSnapshots.has(key)) return;
+  rememberSessionSnapshot(key, await loadRemoteSession(machineId, sessionId));
+}
+
 /** A tab in a project on another machine. The host owns the session; this
  * renders the normal session pane with actions routed to the host. */
 export function RemoteSession({
@@ -192,11 +203,19 @@ function ConnectedRemoteSession({
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState(() => remoteSessionFor(shell.id));
   useEffect(() => {
-    const changed = () => setSessionId(remoteSessionFor(shell.id));
+    const changed = () => {
+      const next = remoteSessionFor(shell.id);
+      setSessionId(next);
+      // A blank tab reused for a preloaded conversation shows it at once.
+      const cached = next
+        ? cachedSessionSnapshots.get(snapshotKey(machine.id, next))
+        : undefined;
+      if (cached) setSnapshot(cached);
+    };
     window.addEventListener(REMOTE_HISTORY_CHANGE, changed);
     changed();
     return () => window.removeEventListener(REMOTE_HISTORY_CHANGE, changed);
-  }, [shell.id]);
+  }, [shell.id, machine.id]);
   const [snapshot, setSnapshot] = useState<HostSession | undefined>(() =>
     sessionId
       ? cachedSessionSnapshots.get(snapshotKey(machine.id, sessionId))
