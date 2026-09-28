@@ -755,6 +755,9 @@ it("starts a remote session in the worktree chosen before its first message", as
     worktreeCwd: "/home/me/repo-worktrees/dev",
   });
   expect(host?.session.cwd).toBe("/home/me/repo-worktrees/dev");
+  expect(container.querySelector('[aria-label="Workspace Worktree"]')?.tagName)
+    .toBe("DIV");
+  expect(byLabel("Workspace Worktree")).toBeNull();
 });
 
 it("creates a host worktree through the composer and selects it", async () => {
@@ -861,7 +864,7 @@ it("keeps a failed host branch action in the picker", async () => {
   expect(document.body.textContent).toContain(branchActionFailure);
 });
 
-it("opens another tab when a started session selects a different worktree", async () => {
+it("locks a started remote session to its worktree like a local session", async () => {
   host = {
     projectId: "project",
     revision: 1,
@@ -879,23 +882,11 @@ it("opens another tab when a started session selects a different worktree", asyn
     },
   };
   rememberRemoteSession("shell", "host-session");
-  const onOpenRemoteWorktree = vi.fn();
-  await render(shell(), { onOpenRemoteWorktree });
-  await act(async () => byLabel("Workspace Current checkout")!.click());
-  const existing = [
-    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
-  ].find((button) => button.textContent?.trim() === "Existing worktree…");
-  await act(async () => existing!.click());
-  await settle();
-  const worktree = [
-    ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-  ].find((button) => button.title === "remote://env/home/me/repo-worktrees/dev");
-  await act(async () => worktree!.click());
-  expect(onOpenRemoteWorktree).toHaveBeenCalledWith(
-    projectKey,
-    "/home/me/repo-worktrees/dev",
-    expect.objectContaining({ model: "codex:gpt-test" }),
-  );
+  await render();
+  expect(container.querySelector('[aria-label="Workspace Current checkout"]')?.tagName)
+    .toBe("DIV");
+  expect(byLabel("Workspace Current checkout")).toBeNull();
+  expect(byLabel("Branch main")).not.toBeNull();
   expect(commands).toHaveLength(0);
 });
 

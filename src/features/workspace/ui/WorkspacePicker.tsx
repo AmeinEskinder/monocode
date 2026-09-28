@@ -61,7 +61,6 @@ export function WorkspacePicker({
   mode,
   base,
   enabled = true,
-  allowNewWorktree = true,
   onModeChange,
   onBaseChange,
   onSelectWorktree,
@@ -76,7 +75,6 @@ export function WorkspacePicker({
   mode: WorkspaceMode;
   base?: string;
   enabled?: boolean;
-  allowNewWorktree?: boolean;
   onModeChange: (mode: WorkspaceMode, base?: string) => void;
   onBaseChange: (base: string) => void;
   onSelectWorktree?: (tree: Worktree) => Promise<void>;
@@ -107,7 +105,6 @@ export function WorkspacePicker({
         cwd={cwd}
         mode={mode}
         enabled={enabled && !!resolvedBase}
-        allowNewWorktree={allowNewWorktree}
         onChange={(next) =>
           onModeChange(next, next === "worktree" ? effectiveBase : undefined)
         }
@@ -154,7 +151,6 @@ function WorkspaceModePicker({
   cwd,
   mode,
   enabled,
-  allowNewWorktree,
   onChange,
   onSelectWorktree,
   onOpenSettings,
@@ -166,7 +162,6 @@ function WorkspaceModePicker({
   cwd: string;
   mode: WorkspaceMode;
   enabled: boolean;
-  allowNewWorktree: boolean;
   onChange: (mode: WorkspaceMode) => void;
   onSelectWorktree?: (tree: Worktree) => Promise<void>;
   onOpenSettings?: () => void;
@@ -324,7 +319,6 @@ function WorkspaceModePicker({
             <button
               key={value}
               type="button"
-              disabled={value === "worktree" && !allowNewWorktree}
               aria-pressed={mode === value}
               onMouseDown={(event) => event.preventDefault()}
               onMouseEnter={closeWorktreeMenu}

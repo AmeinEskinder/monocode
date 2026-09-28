@@ -2242,31 +2242,6 @@ export default function App({
     [activateTab, appendTab, sessionDefaults?.runtimeMode],
   );
 
-  const onOpenRemoteWorktree = useCallback(
-    (
-      project: string,
-      path: string,
-      settings: {
-        harness: HarnessId;
-        model: string;
-        modelSettings: Record<string, string>;
-        runtimeMode: RuntimeMode;
-      },
-    ) => {
-      const session = {
-        ...newDefaultSession(project, settings.runtimeMode),
-        ...settings,
-      };
-      const tab = newTab(session.id);
-      rememberRemotePendingWorktree(session.id, path);
-      setSessions((prev) => [...prev, session]);
-      appendTab(tab, project);
-      setActiveTabId(tab.id);
-      setComposerFocused(true);
-    },
-    [appendTab],
-  );
-
   const onStartInboxItem = useCallback(
     async (item: InboxItem, body?: string) => {
       const start = (description?: string) => {
@@ -10244,7 +10219,6 @@ export default function App({
     onCwdChange,
     onBranchChange,
     onWorktreeChange,
-    onOpenRemoteWorktree,
     onRemoteSnapshot,
     onWorkspaceModeChange,
     onWorktreeBaseChange,

@@ -195,7 +195,6 @@ type Props = {
   /** Keeps local file mentions, skills, and app modes off for host sessions. */
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
-  allowNewWorktree?: boolean;
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
@@ -481,7 +480,6 @@ export function Composer({
   hideTopBar = false,
   remoteSession = false,
   remoteFeatures,
-  allowNewWorktree = true,
   context,
   compactSupported = false,
   quoteRequest,
@@ -1607,7 +1605,6 @@ export function Composer({
     e.stopPropagation();
     const next =
       (workspaceMode ?? "current") === "current" ? "worktree" : "current";
-    if (next === "worktree" && !allowNewWorktree) return;
     if (next === "worktree" && !resolvedWorktreeBase) return;
     onWorkspaceModeChange(
       next,
@@ -1825,7 +1822,6 @@ export function Composer({
                     mode={workspaceMode ?? "current"}
                     base={resolvedWorktreeBase}
                     enabled={enabled && !busy}
-                    allowNewWorktree={allowNewWorktree}
                     onModeChange={onWorkspaceModeChange}
                     onBaseChange={onWorktreeBaseChange}
                     onSelectWorktree={onWorktreeChange}

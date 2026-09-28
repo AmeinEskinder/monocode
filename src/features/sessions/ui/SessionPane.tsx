@@ -115,16 +115,6 @@ export type SessionPaneProps = {
   onCwdChange: (sessionId: string, cwd: string) => void;
   onBranchChange: (sessionId: string) => void;
   onWorktreeChange?: (sessionId: string, tree: Worktree) => Promise<void>;
-  onOpenRemoteWorktree?: (
-    project: string,
-    path: string,
-    settings: {
-      harness: HarnessId;
-      model: string;
-      modelSettings: Record<string, string>;
-      runtimeMode: RuntimeMode;
-    },
-  ) => void;
   onRemoteSnapshot?: (shellId: string, snapshot?: HostSession) => void;
   onWorkspaceModeChange: (
     sessionId: string,
@@ -247,7 +237,6 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
       <RemoteSession
         shell={props.session}
         visible={props.visible}
-        onOpenWorktree={props.onOpenRemoteWorktree}
         onSnapshot={props.onRemoteSnapshot}
         onOpenFile={props.onOpenFile}
         onOpenDiff={props.onOpenDiff}
@@ -569,7 +558,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
     <Composer
       remoteSession={remoteSession}
       remoteFeatures={remoteFeatures}
-      allowNewWorktree={!remoteSessionStarted}
       allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}
       focused={focused && composerFocused}
@@ -622,12 +610,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
           : undefined
       }
       draftWorkspace={
-        (remote || !session.inboxAsk) &&
+        !session.inboxAsk &&
         !session.worktreeRemoved &&
         !managed &&
-        (remote ||
-          ((isEmpty && !session.worktreeCwd) ||
-            (!!session.workspaceMode && !session.worktreeCwd)))
+        (remote
+          ? !remoteSessionStarted
+          : (isEmpty || !!session.workspaceMode) && !session.worktreeCwd)
       }
       workspaceMode={session.workspaceMode}
       worktreeBase={session.worktreeBase}

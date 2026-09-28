@@ -115,7 +115,6 @@ export async function preloadRemoteSession(
 export function RemoteSession({
   shell,
   visible,
-  onOpenWorktree,
   onSnapshot,
   onOpenFile,
   onOpenDiff,
@@ -125,7 +124,6 @@ export function RemoteSession({
   /** The tab's local session, which provides its ID and new-session defaults. */
   shell: Session;
   visible: boolean;
-  onOpenWorktree?: SessionPaneProps["onOpenRemoteWorktree"];
   onSnapshot?: (shellId: string, snapshot?: HostSession) => void;
   onOpenFile: SessionPaneProps["onOpenFile"];
   onOpenDiff: SessionPaneProps["onOpenDiff"];
@@ -165,7 +163,6 @@ export function RemoteSession({
       key={`${machine.id}:${shell.id}`}
       shell={shell}
       visible={visible}
-      onOpenWorktree={onOpenWorktree}
       onSnapshot={onSnapshot}
       onOpenFile={onOpenFile}
       onOpenDiff={onOpenDiff}
@@ -180,7 +177,6 @@ export function RemoteSession({
 function ConnectedRemoteSession({
   shell,
   visible,
-  onOpenWorktree,
   onSnapshot,
   onOpenFile,
   onOpenDiff,
@@ -191,7 +187,6 @@ function ConnectedRemoteSession({
 }: {
   shell: Session;
   visible: boolean;
-  onOpenWorktree?: SessionPaneProps["onOpenRemoteWorktree"];
   onSnapshot?: (shellId: string, snapshot?: HostSession) => void;
   onOpenFile: SessionPaneProps["onOpenFile"];
   onOpenDiff: SessionPaneProps["onOpenDiff"];
@@ -1014,20 +1009,13 @@ function ConnectedRemoteSession({
     const parsed = parseRemotePath(tree.path);
     if (!parsed || parsed.environmentId !== machine.environmentId)
       throw new Error("Choose a worktree on this machine");
+    if (sessionId)
+      throw new Error(
+        "This session’s worktree is fixed. Start a new session to use another.",
+      );
     if (parsed.hostPath === executionCwd) return;
-    if (!hostSession) {
-      rememberRemotePendingWorktree(shell.id, parsed.hostPath);
-      setSelectedCwd(parsed.hostPath);
-      return;
-    }
-    if (!onOpenWorktree)
-      throw new Error("Cannot open another remote session here");
-    onOpenWorktree(shell.cwd, parsed.hostPath, {
-      harness: configuration.harness,
-      model: configuration.model,
-      modelSettings: configuration.settings,
-      runtimeMode: configuration.mode,
-    });
+    rememberRemotePendingWorktree(shell.id, parsed.hostPath);
+    setSelectedCwd(parsed.hostPath);
   };
 
   const buildPlan = (blockId: string, target?: PlanBuildTarget) => {
