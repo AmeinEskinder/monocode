@@ -505,6 +505,7 @@ it("creates a host worktree through the composer and selects it", async () => {
   expect(commands[0]).toMatchObject({
     type: "create",
     worktreeCwd: createdWorktree,
+    autoWorktreeBranch: createdBranch,
   });
 });
 

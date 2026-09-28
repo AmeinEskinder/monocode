@@ -14,6 +14,7 @@ import { remoteProjectFor } from "./remoteProjects";
 
 const CHANGE = "monocode:remote-machines";
 export const REMOTE_HISTORY_CHANGE = "monocode:remote-history";
+export const REMOTE_HISTORY_UPDATED = "monocode:remote-history-updated";
 export const refreshRemoteProjectSessions = () =>
   window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 let cachedMachines: RemoteMachine[] = [];
@@ -250,6 +251,9 @@ function cachedSessions(project: string): HostSessionSummary[] {
     return [];
   }
 }
+export function cachedRemoteSessionSummary(project: string, sessionId: string) {
+  return cachedSessions(project).find((session) => session.id === sessionId);
+}
 
 export type RemoteProjectSessions = {
   /** Undefined when this machine is not connected on this computer. */
@@ -300,6 +304,7 @@ export function useRemoteProjectSessions(
         setLoaded(true);
         try {
           localStorage.setItem(historyKey(project), JSON.stringify(next));
+          window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
         } catch {
           /* the list is refetched next time */
         }

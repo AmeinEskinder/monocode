@@ -201,3 +201,39 @@ export async function createHostWorktree(
     );
   return created;
 }
+
+/** Rename only the temporary branch created for this specific worktree. */
+export async function renameHostWorktreeBranch(
+  cwd: string,
+  path: string,
+  expectedBranch: string,
+  branch: string,
+): Promise<HostWorktree> {
+  if (!/^mc\/[a-z0-9]{8}$/.test(expectedBranch))
+    throw new Error("This is not an automatically created worktree branch");
+  if (
+    !branch ||
+    branch.length > 120 ||
+    branch.startsWith("-") ||
+    branch.startsWith("@")
+  )
+    throw new Error("Enter a valid branch name");
+  await exec("git", ["check-ref-format", "--branch", branch], options(cwd));
+  const tree = (await hostWorktrees(cwd)).worktrees.find(
+    (entry) => entry.path === path && !entry.missing,
+  );
+  if (!tree || tree.isMain || tree.branch !== expectedBranch)
+    throw new Error("The worktree branch has changed");
+  if (branch === expectedBranch) return tree;
+  await exec(
+    "git",
+    ["branch", "-m", expectedBranch, branch],
+    options(tree.path),
+  );
+  const renamed = (await hostWorktrees(cwd)).worktrees.find(
+    (entry) => entry.path === path,
+  );
+  if (!renamed)
+    throw new Error("Branch renamed, but its worktree could not be found");
+  return renamed;
+}

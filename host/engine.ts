@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
-import { resolveHostWorktree } from "./git-worktrees";
+import { renameHostWorktreeBranch, resolveHostWorktree } from "./git-worktrees";
 import {
   applyHarnessEvent,
   stopStreaming,
@@ -12,9 +12,14 @@ import type {
   HarnessSessionInput,
 } from "../src/integrations/harness/core/types";
 import {
+  HARNESS_LABEL,
   RUNTIME_MODES,
+  canReplaceSessionTitle,
+  formatSessionTitle,
+  titleFromPrompt,
   type Session,
 } from "../src/features/sessions/model/session";
+import { namedWorktreeBranch } from "../src/features/source-control/model/worktrees";
 import {
   isRemoteProvider,
   type HostCommand,
@@ -77,12 +82,22 @@ export function parseCommand(input: unknown): HostCommand {
       !RUNTIME_MODES.includes(v.runtimeMode as never)
     )
       throw new Error("Invalid provider or permission mode");
+    if (
+      v.autoWorktreeBranch !== undefined &&
+      (v.worktreeCwd === undefined ||
+        typeof v.autoWorktreeBranch !== "string" ||
+        !/^mc\/[a-z0-9]{8}$/.test(v.autoWorktreeBranch))
+    )
+      throw new Error("Invalid automatically created worktree branch");
     return {
       type: "create",
       commandId,
       projectId: text(v.projectId, "project ID"),
       ...(v.worktreeCwd !== undefined
         ? { worktreeCwd: text(v.worktreeCwd, "working copy", 4096) }
+        : {}),
+      ...(v.autoWorktreeBranch !== undefined
+        ? { autoWorktreeBranch: v.autoWorktreeBranch as string }
         : {}),
       harness: v.harness,
       model: text(v.model, "model", 200),
@@ -277,6 +292,14 @@ export class HostEngine {
     );
   }
 
+  updateSession(id: string, patch: Parameters<HostStore["updateSession"]>[1]) {
+    this.flush(id);
+    const summary = this.store.updateSession(id, patch);
+    const live = this.live.get(id);
+    if (live) live.value = this.store.session(id);
+    return summary;
+  }
+
   private flush(id: string): void {
     const live = this.live.get(id);
     if (!live) return;
@@ -365,6 +388,7 @@ export class HostEngine {
         const cwd = resolveHostWorktree(project.cwd, command.worktreeCwd);
         value = {
           projectId: project.id,
+          autoWorktreeBranch: command.autoWorktreeBranch,
           revision: 0,
           status: "idle",
           updatedAt: Date.now(),
@@ -376,6 +400,9 @@ export class HostEngine {
             runtimeMode: command.runtimeMode,
             modelSettings: command.modelSettings ?? {},
             title: "New remote session",
+            ...(command.autoWorktreeBranch
+              ? { branch: command.autoWorktreeBranch, worktreeCwd: cwd }
+              : {}),
             blocks: [],
           },
         };
@@ -409,6 +436,15 @@ export class HostEngine {
               "Context compaction is unavailable for this provider",
             );
           const runId = randomUUID();
+          const firstTurn =
+            command.type === "send" && !value.session.blocks.length;
+          const placeholderTitle =
+            value.session.title === "New remote session" ||
+            canReplaceSessionTitle(
+              value.session.title,
+              value.session.harness,
+              HARNESS_LABEL[value.session.harness],
+            );
           const model = resolveModel(
             value.session.harness,
             value.session.model,
@@ -422,8 +458,8 @@ export class HostEngine {
               busy: true,
               pendingQuestion: undefined,
               title:
-                command.type === "send" && !value.session.blocks.length
-                  ? command.text.trim().split("\n")[0].slice(0, 72)
+                firstTurn && placeholderTitle
+                  ? titleFromPrompt(command.text, value.session.harness)
                   : value.session.title,
               blocks: [
                 ...value.session.blocks,
@@ -444,8 +480,16 @@ export class HostEngine {
               ],
             },
           };
-          effect = (saved) =>
+          effect = (saved) => {
             this.run(saved, command.type === "compact" ? null : command.text);
+            if (firstTurn && command.type === "send") {
+              this.generateFirstTurnNames(
+                saved,
+                command.text,
+                placeholderTitle,
+              );
+            }
+          };
         } else {
           if (value.runId !== command.runId || value.status !== "running")
             throw new Error(
@@ -513,6 +557,66 @@ export class HostEngine {
     // A receipt means durable host acceptance, not provider completion.
     effect?.(saved);
     return receipt;
+  }
+
+  private generateFirstTurnNames(
+    value: HostSession,
+    message: string,
+    generateTitle: boolean,
+  ): void {
+    const provider = this.provider(value.session.harness);
+    const { id, cwd, harness, title } = value.session;
+    if (generateTitle && provider.generateTitle) {
+      void provider
+        .generateTitle({ sessionId: id, cwd, message })
+        .then((generated) => {
+          if (!generated) return;
+          this.flush(id);
+          const current = this.store.session(id);
+          if (current.session.title !== title) return;
+          const saved = this.save(
+            {
+              ...current,
+              session: {
+                ...current.session,
+                title: formatSessionTitle(harness, generated.title),
+              },
+            },
+            { type: "session.generatedTitle" },
+          );
+          const live = this.live.get(id);
+          if (live) live.value = saved;
+        })
+        .catch((error) =>
+          console.debug("[monocode] remote session title", error),
+        );
+    }
+    const temporary = value.autoWorktreeBranch;
+    if (temporary && provider.generateBranchName) {
+      void provider
+        .generateBranchName(cwd, message)
+        .then(async (fragment) => {
+          const branch = fragment ? namedWorktreeBranch(fragment) : null;
+          if (!branch) return;
+          const project = this.store.project(value.projectId);
+          await renameHostWorktreeBranch(project.cwd, cwd, temporary, branch);
+          this.flush(id);
+          const current = this.store.session(id);
+          const saved = this.save(
+            {
+              ...current,
+              autoWorktreeBranch: undefined,
+              session: { ...current.session, branch },
+            },
+            { type: "session.generatedBranch", branch },
+          );
+          const live = this.live.get(id);
+          if (live) live.value = saved;
+        })
+        .catch((error) =>
+          console.debug("[monocode] remote worktree branch", error),
+        );
+    }
   }
 
   private run(value: HostSession, prompt: string | null): void {

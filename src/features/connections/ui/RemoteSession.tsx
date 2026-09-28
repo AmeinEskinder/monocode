@@ -262,6 +262,9 @@ function ConnectedRemoteSession({
     if (hostSession) rememberRemotePendingWorktree(shell.id);
   }, [hostSession?.id, shell.id]);
   const executionCwd = hostSession?.cwd ?? selectedCwd;
+  useEffect(() => {
+    if (hostSession?.branch) setBranchRefresh((value) => value + 1);
+  }, [hostSession?.branch]);
   const activeSessionId = hostSession?.id ?? sessionId;
   const hasHostBlock = (commandId: string) =>
     !!hostSession?.blocks.some((block) => block.id === commandId);
@@ -603,6 +606,7 @@ function ConnectedRemoteSession({
 
   const startSession = async (turn: OptimisticTurn) => {
     let worktreeCwd = selectedCwd;
+    let autoWorktreeBranch: string | undefined;
     if (draftWorkspaceMode === "worktree") {
       try {
         const tree = await remoteRequest<HostWorktree>(
@@ -617,6 +621,7 @@ function ConnectedRemoteSession({
           },
         );
         worktreeCwd = tree.path;
+        autoWorktreeBranch = tree.branch ?? undefined;
         rememberRemotePendingWorktree(shell.id, tree.path);
         if (alive.current) {
           setSelectedCwd(tree.path);
@@ -635,6 +640,7 @@ function ConnectedRemoteSession({
       commandId: crypto.randomUUID(),
       projectId: project.projectId,
       ...(worktreeCwd !== project.cwd ? { worktreeCwd } : {}),
+      ...(autoWorktreeBranch ? { autoWorktreeBranch } : {}),
       harness: draft.harness,
       model: draft.model,
       modelSettings: draft.settings,

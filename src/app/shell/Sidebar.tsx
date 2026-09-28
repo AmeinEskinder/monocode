@@ -511,6 +511,9 @@ function SidebarComponent({
         archived: session.archived,
         pinned: session.pinned,
         linkedWorkItem: session.linkedWorkItem,
+        repo: session.repo,
+        branch: session.branch,
+        worktreeCwd: session.worktreeCwd,
       }))
     : sessions, [remoteProject, remote.sessions, sessions, cwd]);
   const remoteExecutionCwd =
@@ -3354,7 +3357,10 @@ const SessionCard = memo(function SessionCard({
         ) : null}
         <span className="relative mt-1 flex items-center gap-2">
           {gitLabel ? (
-            <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-content/45">
+            <span
+              className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-content/45"
+              title={session.worktreeCwd ? `${gitLabel}\n${session.worktreeCwd}` : gitLabel}
+            >
               <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
               <span className="min-w-0 truncate">{gitLabel}</span>
             </span>

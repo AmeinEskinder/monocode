@@ -207,8 +207,22 @@ export function createHostServer(
             break;
           case "sessions.list": {
             const projectId = String(params.projectId ?? "");
-            engine.store.project(projectId);
-            result = engine.store.summaries(projectId);
+            const project = engine.store.project(projectId);
+            const summaries = engine.store.summaries(projectId);
+            const paths = [...new Set(summaries.map((session) => session.cwd ?? project.cwd))];
+            const branches = new Map(await Promise.all(paths.map(async (cwd) => {
+              const branch = await exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+                cwd, timeout: 2_000,
+              }).then(({ stdout }) => stdout.trim()).catch(() => "");
+              return [cwd, branch] as const;
+            })));
+            result = summaries.map((session) => ({
+              ...session,
+              repo: project.name,
+              branch: branches.get(session.cwd ?? project.cwd) || undefined,
+              worktreeCwd: session.cwd && session.cwd !== project.cwd
+                ? session.cwd : undefined,
+            }));
             break;
           }
           case "sessions.update": {
@@ -245,7 +259,7 @@ export function createHostServer(
               patch.linkedWorkItem = item as LinkedWorkItem | null;
             }
             if (Object.keys(patch).length === 0) throw new Error("No session changes supplied");
-            result = engine.store.updateSession(sessionId, patch);
+            result = engine.updateSession(sessionId, patch);
             break;
           }
           case "sessions.delete": {

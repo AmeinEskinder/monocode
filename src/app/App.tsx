@@ -536,6 +536,8 @@ import {
 import {
   OPEN_CONNECTIONS_EVENT,
   OPEN_REMOTE_PROJECT_EVENT,
+  REMOTE_HISTORY_UPDATED,
+  cachedRemoteSessionSummary,
   rememberRemotePendingWorktree,
   rememberRemoteSession,
   remotePendingWorktree,
@@ -1032,6 +1034,12 @@ export default function App({
     () => new Map(),
   );
   const [history, setHistory] = useState<SessionSummary[]>(() => bootHistory);
+  const [, refreshRemoteTabTitles] = useState(0);
+  useEffect(() => {
+    const updated = () => refreshRemoteTabTitles((value) => value + 1);
+    window.addEventListener(REMOTE_HISTORY_UPDATED, updated);
+    return () => window.removeEventListener(REMOTE_HISTORY_UPDATED, updated);
+  }, []);
   const [storedLinkedSessions, setStoredLinkedSessions] = useState<
     SessionSummary[]
   >(() => bootHistory.filter((session) => session.linkedWorkItem));
@@ -10896,7 +10904,16 @@ export default function App({
   );
 }
 function conversationTitle(session: Session): string {
-  const title = sessionDisplayTitle(session.title, session.harness);
+  const hostId = isRemoteProjectPath(session.cwd)
+    ? remoteSessionFor(session.id)
+    : undefined;
+  const remote = hostId
+    ? cachedRemoteSessionSummary(session.cwd, hostId)
+    : undefined;
+  const title = sessionDisplayTitle(
+    remote?.title ?? session.title,
+    remote?.harness ?? session.harness,
+  );
   return title === "New session" ? "" : title;
 }
 

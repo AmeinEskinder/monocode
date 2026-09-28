@@ -207,6 +207,13 @@ describe("remote host API", () => {
     expect(s.store.session(opened.value.result.sessionId).session.cwd).toBe(
       tree.path,
     );
+    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result[0])
+      .toMatchObject({
+        id: opened.value.result.sessionId,
+        branch: "feature",
+        worktreeCwd: tree.path,
+        repo: s.project.name,
+      });
     expect(
       (
         await s.call("commands.dispatch", {

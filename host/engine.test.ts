@@ -60,6 +60,35 @@ function setup(harness: "codex" | "claude" = "codex") {
 }
 
 describe("headless session ownership", () => {
+  it("keeps a manually renamed title when first-turn generation finishes later", async () => {
+    const { engine, store, provider, turns, id } = setup();
+    let finishTitle: (title: {
+      title: string;
+      workItem: null;
+    }) => void = () => {};
+    provider.generateTitle = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishTitle = resolve;
+        }),
+    );
+    engine.command({
+      type: "send",
+      commandId: "name-first-turn",
+      sessionId: id,
+      text: "Fix remote project titles",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    engine.updateSession(id, { title: "codex · My own title" });
+    finishTitle({ title: "Generated title", workItem: null });
+    await vi.waitFor(() =>
+      expect(provider.generateTitle).toHaveBeenCalledTimes(1),
+    );
+    turns[0].finish();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+    expect(store.session(id).session.title).toBe("codex · My own title");
+  });
+
   it("keeps remote card changes in host history and removes deleted sessions", () => {
     const { store, project, id } = setup();
     const initial = store.summaries(project.id)[0];
@@ -556,7 +585,7 @@ describe("headless session ownership", () => {
     expect(store.summaries(project.id)[0]).toMatchObject({
       id,
       status: "idle",
-      title: "Work",
+      title: "codex · Work",
     });
   });
 

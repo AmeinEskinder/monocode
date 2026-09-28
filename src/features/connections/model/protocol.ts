@@ -45,6 +45,8 @@ export type HostSession = {
   updatedAt: number;
   archived?: boolean;
   pinned?: boolean;
+  /** Temporary branch created by the composer for automatic first-turn naming. */
+  autoWorktreeBranch?: string;
   /** Host-only: the revision at which each block last changed. */
   blockRevisions?: Record<string, number>;
 };
@@ -61,6 +63,9 @@ export type HostSessionSummary = Omit<
   createdAt?: number;
   linkedWorkItem?: LinkedWorkItem;
   needsInput?: boolean;
+  branch?: string;
+  worktreeCwd?: string;
+  repo?: string;
 };
 
 /** `sessions.sync` sends only the blocks that changed after the client's
@@ -123,6 +128,7 @@ export type HostCommand =
       commandId: string;
       projectId: string;
       worktreeCwd?: string;
+      autoWorktreeBranch?: string;
       harness: RemoteProvider;
       model: string;
       modelSettings?: Record<string, string>;
