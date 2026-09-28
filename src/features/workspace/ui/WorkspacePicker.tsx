@@ -470,7 +470,7 @@ function branchRef(branch: BaseBranch): string {
   return branch.remote ? `${branch.remote}/${branch.name}` : branch.name;
 }
 
-function WorktreeBasePicker({
+export function WorktreeBasePicker({
   branches,
   selected,
   loading,

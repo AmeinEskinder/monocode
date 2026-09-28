@@ -13,7 +13,9 @@ import {
 import { remoteProjectFor } from "./remoteProjects";
 
 const CHANGE = "monocode:remote-machines";
-const HISTORY_CHANGE = "monocode:remote-history";
+export const REMOTE_HISTORY_CHANGE = "monocode:remote-history";
+export const refreshRemoteProjectSessions = () =>
+  window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 let cachedMachines: RemoteMachine[] = [];
 let machinesLoaded = false;
 export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
@@ -63,7 +65,7 @@ export function rememberRemoteSession(shellId: string, sessionId?: string) {
   } catch {
     /* tab selection is best effort */
   }
-  window.dispatchEvent(new Event(HISTORY_CHANGE));
+  window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 }
 
 const pendingPrefix = (project: string, environment: string) =>
@@ -253,6 +255,7 @@ export type RemoteProjectSessions = {
   /** Undefined when this machine is not connected on this computer. */
   machine?: RemoteMachine;
   sessions: HostSessionSummary[];
+  loaded: boolean;
 };
 
 /** Lists a remote project's host sessions, keeping the last list visible
@@ -269,15 +272,17 @@ export function useRemoteProjectSessions(
   const [sessions, setSessions] = useState<HostSessionSummary[]>(() =>
     remote ? cachedSessions(project) : [],
   );
+  const [loaded, setLoaded] = useState(false);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     if (!remote) return;
     const changed = () => setRefresh((value) => value + 1);
-    window.addEventListener(HISTORY_CHANGE, changed);
-    return () => window.removeEventListener(HISTORY_CHANGE, changed);
+    window.addEventListener(REMOTE_HISTORY_CHANGE, changed);
+    return () => window.removeEventListener(REMOTE_HISTORY_CHANGE, changed);
   }, [!!remote]);
   useEffect(() => {
     setSessions(remote ? cachedSessions(project) : []);
+    setLoaded(false);
     if (!remote || !machine) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -292,6 +297,7 @@ export function useRemoteProjectSessions(
         if (disposed) return;
         failures = 0;
         setSessions(next);
+        setLoaded(true);
         try {
           localStorage.setItem(historyKey(project), JSON.stringify(next));
         } catch {
@@ -313,5 +319,5 @@ export function useRemoteProjectSessions(
       clearTimeout(timer);
     };
   }, [project, remote?.projectId, machine?.id, refresh]);
-  return { machine, sessions };
+  return { machine, sessions, loaded };
 }

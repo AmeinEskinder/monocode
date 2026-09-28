@@ -538,8 +538,10 @@ import {
   OPEN_REMOTE_PROJECT_EVENT,
   rememberRemotePendingWorktree,
   rememberRemoteSession,
+  remotePendingWorktree,
   remoteSessionFor,
 } from "../features/connections/model/connections";
+import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import {
   remoteFilePath,
@@ -2179,6 +2181,23 @@ export default function App({
         activateTab(existing.tab.id, existing.shellId);
         return;
       }
+      const blankTab =
+        tabs.find((tab) =>
+          tab.id === activeTabId &&
+          sameProjectPath(project, workspaceTabCwd(tab, sessionsRef.current) ?? "") &&
+          isBlankWorkspaceTab(tab, sessionsRef.current),
+        ) ??
+        tabs.find((tab) =>
+          sameProjectPath(project, workspaceTabCwd(tab, sessionsRef.current) ?? "") &&
+          isBlankWorkspaceTab(tab, sessionsRef.current),
+        );
+      if (blankTab) {
+        const shellId = leafIds(blankTab.layout)[0];
+        rememberRemoteSession(shellId, remoteSessionId);
+        activateTab(blankTab.id, shellId);
+        setComposerFocused(true);
+        return;
+      }
       const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
       const tab = newTab(session.id);
       rememberRemoteSession(session.id, remoteSessionId);
@@ -2186,7 +2205,7 @@ export default function App({
       appendTab(tab, project);
       setActiveTabId(tab.id);
     },
-    [activateTab, appendTab, sessionDefaults?.runtimeMode, tabs],
+    [activateTab, activeTabId, appendTab, sessionDefaults?.runtimeMode, tabs],
   );
 
   const onOpenRemoteWorktree = useCallback(
@@ -2718,6 +2737,8 @@ export default function App({
         );
         for (const sessionId of gone) {
           persistSession(sessionsRef.current.find((s) => s.id === sessionId));
+          rememberRemoteSession(sessionId);
+          rememberRemotePendingWorktree(sessionId);
         }
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
@@ -2779,6 +2800,8 @@ export default function App({
           persistSession(
             sessionsRef.current.find((session) => session.id === sessionId),
           );
+          rememberRemoteSession(sessionId);
+          rememberRemotePendingWorktree(sessionId);
         }
         setDirtyFiles((prev) => {
           const next = new Set(prev);
@@ -3036,6 +3059,10 @@ export default function App({
 
       const finishClear = () => {
         persistSession(oldSession);
+        for (const shellId of leafIds(tab.layout)) {
+          rememberRemoteSession(shellId);
+          rememberRemotePendingWorktree(shellId);
+        }
 
         const session = newSession(
           oldSession.harness,
@@ -3079,6 +3106,26 @@ export default function App({
       ).then((ok) => ok && finishClear());
     },
     [tabs, persistSession, refreshHistory, sidebarCwd],
+  );
+
+  const onRemoteSessionDeleted = useCallback(
+    (remoteSessionId: string) => {
+      const tab = tabsRef.current.find((entry) =>
+        leafIds(entry.layout).some(
+          (shellId) => remoteSessionFor(shellId) === remoteSessionId,
+        ),
+      );
+      if (!tab) return;
+      const closePlan = planWorkspaceTabClose({
+        tabs: tabsRef.current,
+        sessions: sessionsRef.current,
+        closingTabId: tab.id,
+        scope: tabCloseScope,
+      });
+      if (closePlan.action === "keep") onClearTabSession(tab.id);
+      else onCloseTab(tab.id);
+    },
+    [onClearTabSession, onCloseTab, tabCloseScope],
   );
 
   const onCloseAllTabs = useCallback(() => {
@@ -5127,7 +5174,13 @@ export default function App({
       }
       saveSessionFolders(
         source.cwd,
-        placeSessionInFolder(folders, sessionId, target),
+        placeSessionInFolder(
+          folders,
+          isRemoteProjectPath(source.cwd)
+            ? (remoteSessionFor(sessionId) ?? sessionId)
+            : sessionId,
+          target,
+        ),
       );
     },
     [],
@@ -9713,13 +9766,27 @@ export default function App({
         (session) => session.id === activeWorkspace.focusedId,
       );
       if (!current) return;
+      const remoteProject = isRemoteProjectPath(current.cwd);
+      const navigationId = remoteProject
+        ? remoteSessionFor(current.id)
+        : current.id;
+      if (!navigationId) return;
 
       const next = adjacentItemId(
         sessionNavigationIdsRef.current,
-        current.id,
+        navigationId,
         delta,
       );
-      if (!next || next === current.id) return;
+      if (!next || next === navigationId) return;
+      if (remoteProject) {
+        if (inCurrentTab) {
+          rememberRemoteSession(current.id, next);
+          setComposerFocused(true);
+        } else {
+          onSelectRemoteSession(current.cwd, next);
+        }
+        return;
+      }
       // Stepping gives no hover to warm the transcript, so load the one a
       // further step away once this switch has its own session.
       const prefetchAhead = () => {
@@ -9757,6 +9824,7 @@ export default function App({
       ensureOpenSession,
       onPrefetchHistorySession,
       onSelectHistorySession,
+      onSelectRemoteSession,
       revealLinkedSessionUpdate,
     ],
   );
@@ -10181,6 +10249,29 @@ export default function App({
     );
   }, [currentProjectDock, dockVisible]);
 
+  const onRemoteSnapshot = useCallback((shellId: string, snapshot: HostSession) => {
+    setSessions((current) => {
+      const shell = current.find((entry) => entry.id === shellId);
+      if (!shell) return current;
+      const host = snapshot.session;
+      if (
+        shell.title === host.title &&
+        shell.harness === host.harness &&
+        shell.model === host.model &&
+        shell.runtimeMode === host.runtimeMode
+      ) return current;
+      return current.map((entry) => entry.id === shellId
+        ? {
+            ...entry,
+            title: host.title,
+            harness: host.harness,
+            model: host.model,
+            runtimeMode: host.runtimeMode,
+          }
+        : entry);
+    });
+  }, []);
+
   const sessionPaneProps = {
     recents,
     hideProjectPicker: true,
@@ -10190,6 +10281,7 @@ export default function App({
     onBranchChange,
     onWorktreeChange,
     onOpenRemoteWorktree,
+    onRemoteSnapshot,
     onWorkspaceModeChange,
     onWorktreeBaseChange,
     onManageWorktrees: () => openSettings("worktrees"),
@@ -10304,6 +10396,7 @@ export default function App({
               pending={historyPending}
               onSelectSession={onSelectHistorySession}
               onSelectRemoteSession={onSelectRemoteSession}
+              onRemoteSessionDeleted={onRemoteSessionDeleted}
               onPrefetchSession={onPrefetchHistorySession}
               onSessionNavigationOrder={onSessionNavigationOrder}
               onPlaceSessionOnPane={onPlaceSessionOnPane}
@@ -10848,6 +10941,7 @@ function isBlankWorkspaceTab(tab: WorkspaceTab, sessions: Session[]): boolean {
     return false;
   const ids = leafIds(tab.layout);
   if (ids.length !== 1) return false;
+  if (remoteSessionFor(ids[0]) || remotePendingWorktree(ids[0])) return false;
   return isBlankSession(sessions.find((entry) => entry.id === ids[0]));
 }
 

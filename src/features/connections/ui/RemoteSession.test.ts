@@ -63,6 +63,10 @@ let commands: HostCommand[];
 let projectKey: string;
 let syncDelay: Promise<void> | undefined;
 let branchFailure: string | undefined;
+let branchActionFailure: string | undefined;
+let currentBranch: string;
+let createdBranch: string | undefined;
+let createdWorktree: string | undefined;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -72,6 +76,10 @@ beforeEach(() => {
   host = undefined;
   syncDelay = undefined;
   branchFailure = undefined;
+  branchActionFailure = undefined;
+  currentBranch = "main";
+  createdBranch = undefined;
+  createdWorktree = undefined;
   catalog = { models: { codex: [gpt] }, errors: {} };
   projectKey = rememberRemoteProject("env", {
     id: "project",
@@ -100,7 +108,10 @@ beforeEach(() => {
     }
     if (method === "git.branches") {
       if (branchFailure) throw new Error(branchFailure);
-      return { current: "main", branches: ["main", "dev"] };
+      return {
+        current: currentBranch,
+        branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])],
+      };
     }
     if (method === "git.worktrees")
       return {
@@ -120,13 +131,39 @@ beforeEach(() => {
             isMain: false,
             missing: false,
           },
+          ...(createdWorktree
+            ? [
+                {
+                  path: createdWorktree,
+                  branch: createdBranch,
+                  head: "abc",
+                  isMain: false,
+                  missing: false,
+                },
+              ]
+            : []),
         ],
       };
-    if (method === "git.switch" || method === "git.createBranch")
+    if (method === "git.worktreeCreate") {
+      createdBranch = params.branch;
+      createdWorktree = `/home/me/repo-worktrees/wt-${params.branch.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      return {
+        path: createdWorktree,
+        branch: createdBranch,
+        head: "abc",
+        isMain: false,
+        missing: false,
+      };
+    }
+    if (method === "git.switch" || method === "git.createBranch") {
+      if (branchActionFailure) throw new Error(branchActionFailure);
+      currentBranch = params.branch;
+      if (method === "git.createBranch") createdBranch = params.branch;
       return {
         current: params.branch,
-        branches: ["main", "dev", params.branch],
+        branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])],
       };
+    }
     if (method === "sessions.sync") {
       if (syncDelay) await syncDelay;
       return { kind: "snapshot", value: host };
@@ -287,6 +324,33 @@ it("uses the normal composer with the machine and host branch in its top row", a
   expect(byLabel("Project ")).toBeNull();
 });
 
+it("opens a host conversation in an already mounted empty tab", async () => {
+  await render();
+  dispatch({
+    type: "create",
+    commandId: "existing-session",
+    projectId: "project",
+    harness: "codex",
+    model: gpt.id,
+    runtimeMode: "supervised",
+  });
+  host = {
+    ...host!,
+    session: {
+      ...host!.session,
+      title: "Codex · Existing conversation",
+      blocks: [{ id: "old-message", role: "user", text: "Earlier message" }],
+    },
+  };
+  commands = [];
+  await act(async () => rememberRemoteSession("shell", "host-session"));
+  await settle();
+  expect(container.textContent).toContain("Earlier message");
+  await send("Continue here");
+  expect(commands.some((command) => command.type === "create")).toBe(false);
+  expect(commands.some((command) => command.type === "send")).toBe(true);
+});
+
 it("keeps the branch picker visible when Git lookup fails and offers a retry", async () => {
   branchFailure = "fatal: not a git repository";
   await render();
@@ -374,10 +438,14 @@ it("keeps the first turn active while its accepted message awaits host sync", as
 
 it("starts a remote session in the worktree chosen before its first message", async () => {
   await render();
-  await act(async () => byLabel("Choose remote working copy")!.click());
+  await act(async () => byLabel("Workspace Current checkout")!.click());
+  const existing = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent?.trim() === "Existing worktree…");
+  await act(async () => existing!.click());
   await settle();
   const worktree = [
-    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
   ].find((button) => button.title === "/home/me/repo-worktrees/dev");
   expect(worktree).toBeDefined();
   await act(async () => worktree!.click());
@@ -387,6 +455,106 @@ it("starts a remote session in the worktree chosen before its first message", as
     worktreeCwd: "/home/me/repo-worktrees/dev",
   });
   expect(host?.session.cwd).toBe("/home/me/repo-worktrees/dev");
+});
+
+it("creates a host worktree through the composer and selects it", async () => {
+  await render();
+  await act(async () => byLabel("Workspace Current checkout")!.click());
+  expect(
+    document.body.querySelector('[aria-label="Workspace"]'),
+  ).not.toBeNull();
+  expect(document.body.textContent).toContain("Existing worktree…");
+  expect(document.body.textContent).toContain("Worktree settings");
+  expect(
+    document.body.querySelector('[aria-label="Existing worktrees"]'),
+  ).toBeNull();
+  expect(
+    document.body.querySelector('input[placeholder="Search working copies…"]'),
+  ).toBeNull();
+  const create = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent?.trim() === "New worktree");
+  await act(async () => create!.click());
+  expect(byLabel("Workspace New worktree")).not.toBeNull();
+  expect(byLabel("Create worktree from main")).not.toBeNull();
+  expect(byLabel("Host branch main")).toBeNull();
+  await act(async () => byLabel("Create worktree from main")!.click());
+  const devBase = [
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+  ].find((button) => button.textContent?.trim() === "dev");
+  await act(async () => devBase!.click());
+  expect(byLabel("Create worktree from dev")).not.toBeNull();
+  expect(invoke).not.toHaveBeenCalledWith(
+    "remote_request",
+    expect.objectContaining({ method: "git.worktreeCreate" }),
+  );
+  await send("Work in new tree");
+  expect(invoke).toHaveBeenCalledWith(
+    "remote_request",
+    expect.objectContaining({
+      method: "git.worktreeCreate",
+      params: expect.objectContaining({
+        projectId: "project",
+        cwd: "/home/me/repo",
+        branch: expect.stringMatching(/^mc\/[a-z0-9]+$/),
+        base: "dev",
+        existing: false,
+      }),
+    }),
+  );
+  expect(commands[0]).toMatchObject({
+    type: "create",
+    worktreeCwd: createdWorktree,
+  });
+});
+
+it("searches and creates a host branch from the composer picker", async () => {
+  await render();
+  await act(async () => byLabel("Host branch main")!.click());
+  const search = document.body.querySelector<HTMLInputElement>(
+    'input[aria-label="Search or create a host branch"]',
+  )!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(search, "feature/test");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const create = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) =>
+    button.textContent?.includes("Create and checkout feature/test"),
+  );
+  await act(async () => create!.click());
+  await settle();
+  expect(invoke).toHaveBeenCalledWith(
+    "remote_request",
+    expect.objectContaining({
+      method: "git.createBranch",
+      params: expect.objectContaining({
+        branch: "feature/test",
+        cwd: "/home/me/repo",
+      }),
+    }),
+  );
+  expect(byLabel("Host branch feature/test")).not.toBeNull();
+});
+
+it("keeps a failed host branch action in the picker", async () => {
+  branchActionFailure =
+    "Commit or stash changes on the host before switching branches";
+  await render();
+  await act(async () => byLabel("Host branch main")!.click());
+  const dev = [
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+  ].find((button) => button.textContent?.includes("dev"));
+  await act(async () => dev!.click());
+  await settle();
+  expect(
+    document.body.querySelector('[aria-label="Host branches"]'),
+  ).not.toBeNull();
+  expect(document.body.textContent).toContain(branchActionFailure);
 });
 
 it("opens another tab when a started session selects a different worktree", async () => {
@@ -409,10 +577,14 @@ it("opens another tab when a started session selects a different worktree", asyn
   rememberRemoteSession("shell", "host-session");
   const onOpenRemoteWorktree = vi.fn();
   await render(shell(), { onOpenRemoteWorktree });
-  await act(async () => byLabel("Choose remote working copy")!.click());
+  await act(async () => byLabel("Workspace Current checkout")!.click());
+  const existing = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent?.trim() === "Existing worktree…");
+  await act(async () => existing!.click());
   await settle();
   const worktree = [
-    ...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
   ].find((button) => button.title === "/home/me/repo-worktrees/dev");
   await act(async () => worktree!.click());
   expect(onOpenRemoteWorktree).toHaveBeenCalledWith(

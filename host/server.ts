@@ -12,6 +12,8 @@ import {
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import type { LinkedWorkItem } from "../src/features/sessions/model/session";
+import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
 import { browseHostDirectories } from "./browse";
 import {
@@ -207,6 +209,52 @@ export function createHostServer(
             const projectId = String(params.projectId ?? "");
             engine.store.project(projectId);
             result = engine.store.summaries(projectId);
+            break;
+          }
+          case "sessions.update": {
+            const sessionId = String(params.sessionId ?? "");
+            const current = engine.store.session(sessionId);
+            if (current.projectId !== params.projectId)
+              throw new Error("Session does not belong to this project");
+            const patch: { title?: string; archived?: boolean; pinned?: boolean; linkedWorkItem?: LinkedWorkItem | null } = {};
+            if (params.title !== undefined) {
+              if (typeof params.title !== "string") throw new Error("Invalid session title");
+              patch.title = params.title;
+            }
+            if (params.archived !== undefined) {
+              if (typeof params.archived !== "boolean") throw new Error("Invalid archive value");
+              patch.archived = params.archived;
+            }
+            if (params.pinned !== undefined) {
+              if (typeof params.pinned !== "boolean") throw new Error("Invalid pin value");
+              patch.pinned = params.pinned;
+            }
+            if (params.linkedWorkItem !== undefined) {
+              const item = params.linkedWorkItem;
+              const parsed = item && typeof item === "object" && !Array.isArray(item)
+                ? parseGithubWorkItemUrl(String((item as LinkedWorkItem).url ?? ""))
+                : null;
+              if (item !== null && (
+                typeof item !== "object" || Array.isArray(item) ||
+                !parsed ||
+                parsed.kind !== (item as LinkedWorkItem).kind ||
+                parsed.repo !== (item as LinkedWorkItem).repo ||
+                parsed.number !== (item as LinkedWorkItem).number ||
+                parsed.url !== (item as LinkedWorkItem).url
+              )) throw new Error("Invalid linked work item");
+              patch.linkedWorkItem = item as LinkedWorkItem | null;
+            }
+            if (Object.keys(patch).length === 0) throw new Error("No session changes supplied");
+            result = engine.store.updateSession(sessionId, patch);
+            break;
+          }
+          case "sessions.delete": {
+            const sessionId = String(params.sessionId ?? "");
+            const current = engine.store.session(sessionId);
+            if (current.projectId !== params.projectId)
+              throw new Error("Session does not belong to this project");
+            engine.store.deleteSession(sessionId);
+            result = { deleted: true };
             break;
           }
           case "sessions.sync": {

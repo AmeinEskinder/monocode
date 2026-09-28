@@ -60,6 +60,44 @@ function setup(harness: "codex" | "claude" = "codex") {
 }
 
 describe("headless session ownership", () => {
+  it("keeps remote card changes in host history and removes deleted sessions", () => {
+    const { store, project, id } = setup();
+    const initial = store.summaries(project.id)[0];
+    expect(initial.model).toBe("codex:test");
+
+    const updated = store.updateSession(id, {
+      title: "Codex · Renamed",
+      pinned: true,
+      archived: true,
+      linkedWorkItem: {
+        kind: "issue",
+        repo: "example/repo",
+        number: 42,
+        url: "https://github.com/example/repo/issues/42",
+      },
+    });
+    expect(updated).toMatchObject({
+      title: "Codex · Renamed",
+      pinned: true,
+      archived: true,
+      model: "codex:test",
+      linkedWorkItem: { number: 42 },
+    });
+    expect(store.summaries(project.id)[0]).toMatchObject({
+      title: updated.title,
+      pinned: true,
+      archived: true,
+      revision: updated.revision,
+    });
+    expect(store.sync(id, initial.revision)).toMatchObject({ kind: "delta" });
+    store.updateSession(id, { linkedWorkItem: null });
+    expect(store.summaries(project.id)[0].linkedWorkItem).toBeUndefined();
+
+    store.deleteSession(id);
+    expect(store.summaries(project.id)).toEqual([]);
+    expect(() => store.session(id)).toThrow("Session not found");
+  });
+
   it("preserves the transaction error and invalidates cached state if rollback fails", () => {
     const { store, id } = setup();
     const cached = store.session(id);

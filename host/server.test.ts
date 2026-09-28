@@ -109,6 +109,38 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("applies card actions to the owning project and lists their saved state", async () => {
+    const s = await setup();
+    const create = await s.call("commands.dispatch", {
+      type: "create",
+      commandId: "card-session",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const sessionId = create.value.result.sessionId;
+    const changed = await s.call("sessions.update", {
+      projectId: s.project.id,
+      sessionId,
+      title: "Codex · Card title",
+      pinned: true,
+    });
+    expect(changed.status).toBe(200);
+    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result[0])
+      .toMatchObject({ id: sessionId, title: "Codex · Card title", pinned: true, model: "codex:test" });
+    expect((await s.call("sessions.update", {
+      projectId: "wrong-project", sessionId, archived: true,
+    })).status).not.toBe(200);
+    expect((await s.call("sessions.delete", {
+      projectId: "wrong-project", sessionId,
+    })).status).not.toBe(200);
+    expect((await s.call("sessions.delete", {
+      projectId: s.project.id, sessionId,
+    })).status).toBe(200);
+    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result).toEqual([]);
+  });
+
   it("lists, creates, and selects registered remote worktrees through RPC", async () => {
     const s = await setup();
     const git = (...args: string[]) =>

@@ -291,31 +291,7 @@ pub fn remote_request(
     method: String,
     params: Value,
 ) -> Result<Value, String> {
-    if !matches!(
-        method.as_str(),
-        "environment.describe"
-            | "projects.list"
-            | "projects.browse"
-            | "projects.open"
-            | "models.list"
-            | "sessions.list"
-            | "sessions.sync"
-            | "sessions.syncChunk"
-            | "commands.dispatch"
-            | "devices.revokeSelf"
-            | "git.diff"
-            | "git.branches"
-            | "git.switch"
-            | "files.read"
-            | "files.list"
-            | "files.search"
-            | "files.searchContent"
-            | "files.create"
-            | "files.write"
-            | "git.index"
-            | "git.fileDiff"
-            | "git.action"
-    ) {
+    if !supported_remote_method(&method) {
         return Err("Unsupported remote operation".into());
     }
     let machine = {
@@ -361,6 +337,39 @@ pub fn remote_request(
         return Err("Host identity changed. Add this machine again before continuing.".into());
     }
     Ok(result)
+}
+
+fn supported_remote_method(method: &str) -> bool {
+    matches!(
+        method,
+        "environment.describe"
+            | "projects.list"
+            | "projects.browse"
+            | "projects.open"
+            | "models.list"
+            | "sessions.list"
+            | "sessions.update"
+            | "sessions.delete"
+            | "sessions.sync"
+            | "sessions.syncChunk"
+            | "commands.dispatch"
+            | "devices.revokeSelf"
+            | "git.diff"
+            | "git.branches"
+            | "git.switch"
+            | "git.createBranch"
+            | "git.worktrees"
+            | "git.worktreeCreate"
+            | "files.read"
+            | "files.list"
+            | "files.search"
+            | "files.searchContent"
+            | "files.create"
+            | "files.write"
+            | "git.index"
+            | "git.fileDiff"
+            | "git.action"
+    )
 }
 
 fn start_ssh_job(
@@ -619,6 +628,19 @@ pub fn remote_ssh_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_forwards_host_git_picker_operations() {
+        for method in [
+            "git.branches",
+            "git.switch",
+            "git.createBranch",
+            "git.worktrees",
+            "git.worktreeCreate",
+        ] {
+            assert!(supported_remote_method(method), "{method}");
+        }
+        assert!(!supported_remote_method("git.arbitrary"));
+    }
     #[test]
     fn endpoints_require_an_encrypted_route_and_no_embedded_secrets() {
         assert_eq!(

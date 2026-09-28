@@ -8,6 +8,8 @@ import type {
   RemoteProvider,
   SessionSync,
 } from "../src/features/connections/model/protocol";
+import type { LinkedWorkItem } from "../src/features/sessions/model/session";
+import { sessionNeedsInput } from "../src/features/sessions/model/session";
 
 const CACHED_SESSIONS = 32;
 
@@ -109,11 +111,14 @@ export class HostStore {
     return this.db
       .prepare("SELECT id, summary FROM sessions WHERE project_id=?")
       .all(projectId)
-      .map((row) =>
-        row.summary
+      .map((row) => {
+        const cached = row.summary
           ? (JSON.parse(String(row.summary)) as HostSessionSummary)
-          : summary(this.session(String(row.id))),
-      )
+          : undefined;
+        return cached?.model && cached.needsInput !== undefined
+          ? cached
+          : summary(this.session(String(row.id)));
+      })
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
@@ -172,6 +177,45 @@ export class HostStore {
       .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
       .run(value.session.id, value.revision - 2_000);
     return this.remember(value);
+  }
+
+  updateSession(
+    id: string,
+    patch: { title?: string; archived?: boolean; pinned?: boolean; linkedWorkItem?: LinkedWorkItem | null },
+  ): HostSessionSummary {
+    return this.transaction(() => {
+      const current = this.session(id);
+      if (patch.title !== undefined && (!patch.title.trim() || patch.title.length > 200))
+        throw new Error("Invalid session title");
+      const next = this.save(
+        {
+          ...current,
+          revision: current.revision + 1,
+          archived: patch.archived ?? current.archived,
+          pinned: patch.pinned ?? current.pinned,
+          session: {
+            ...current.session,
+            ...(patch.title === undefined ? {} : { title: patch.title.trim() }),
+            ...(patch.linkedWorkItem === undefined
+              ? {}
+              : { linkedWorkItem: patch.linkedWorkItem ?? undefined }),
+          },
+        },
+        { type: "session.metadata", patch },
+      );
+      return summary(next);
+    });
+  }
+
+  deleteSession(id: string): void {
+    this.transaction(() => {
+      const current = this.session(id);
+      if (current.status === "running")
+        throw new Error("Stop this session before deleting it");
+      this.db.prepare("DELETE FROM events WHERE session_id=?").run(id);
+      this.db.prepare("DELETE FROM sessions WHERE id=?").run(id);
+      this.cache.delete(id);
+    });
   }
 
   receipt(id: string, signature: string): CommandReceipt | undefined {
@@ -266,6 +310,13 @@ export function summary(value: HostSession): HostSessionSummary {
     cwd: value.session.cwd,
     title: value.session.title,
     harness: value.session.harness as RemoteProvider,
+    model: value.session.model,
+    runtimeMode: value.session.runtimeMode,
+    createdAt: value.updatedAt,
+    archived: value.archived,
+    pinned: value.pinned,
+    linkedWorkItem: value.session.linkedWorkItem,
+    needsInput: sessionNeedsInput(value.session),
   };
 }
 

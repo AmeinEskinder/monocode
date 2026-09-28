@@ -1,6 +1,7 @@
 import type { Block, Session, RuntimeMode } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { AgentModel } from "../../sessions/model/models";
+import type { LinkedWorkItem } from "../../sessions/model/session";
 
 export const HOST_PROTOCOL_VERSION = 1;
 export type RemoteProvider = "codex" | "claude";
@@ -42,6 +43,8 @@ export type HostSession = {
   runId?: string;
   status: "idle" | "running" | "interrupted";
   updatedAt: number;
+  archived?: boolean;
+  pinned?: boolean;
   /** Host-only: the revision at which each block last changed. */
   blockRevisions?: Record<string, number>;
 };
@@ -53,6 +56,11 @@ export type HostSessionSummary = Omit<
   title: string;
   harness: RemoteProvider;
   cwd?: string;
+  model?: string;
+  runtimeMode?: RuntimeMode;
+  createdAt?: number;
+  linkedWorkItem?: LinkedWorkItem;
+  needsInput?: boolean;
 };
 
 /** `sessions.sync` sends only the blocks that changed after the client's

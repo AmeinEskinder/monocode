@@ -98,6 +98,7 @@ import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import type { HostSession } from "../../connections/model/protocol";
 
 export type SessionPaneProps = {
   session: Session;
@@ -125,6 +126,7 @@ export type SessionPaneProps = {
       runtimeMode: RuntimeMode;
     },
   ) => void;
+  onRemoteSnapshot?: (shellId: string, snapshot: HostSession) => void;
   onWorkspaceModeChange: (
     sessionId: string,
     mode: WorkspaceMode,
@@ -243,6 +245,7 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
         shell={props.session}
         visible={props.visible}
         onOpenWorktree={props.onOpenRemoteWorktree}
+        onSnapshot={props.onRemoteSnapshot}
         render={(remote) => <LocalSessionPane {...props} {...remote} />}
       />
     );
