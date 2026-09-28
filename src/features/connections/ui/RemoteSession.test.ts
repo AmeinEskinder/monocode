@@ -23,11 +23,47 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
 vi.mock("../../sessions/ui/AgentTranscript", () => ({
-  AgentTranscript: ({ blocks, busy }: { blocks: Block[]; busy: boolean }) =>
+  AgentTranscript: ({
+    blocks,
+    busy,
+    onSendDraft,
+    onRemoveDraft,
+  }: {
+    blocks: Block[];
+    busy: boolean;
+    onSendDraft?: (block: Block) => void;
+    onRemoveDraft?: (block: Block) => void;
+  }) =>
     createElement(
       "ol",
       { "aria-label": "Transcript", "data-busy": busy },
-      blocks.map((block) => createElement("li", { key: block.id }, block.text)),
+      blocks.map((block) =>
+        createElement(
+          "li",
+          { key: block.id },
+          block.text,
+          block.draft && onSendDraft
+            ? createElement(
+                "button",
+                {
+                  "aria-label": "Send remote draft",
+                  onClick: () => onSendDraft(block),
+                },
+                "Send draft",
+              )
+            : null,
+          block.draft && onRemoveDraft
+            ? createElement(
+                "button",
+                {
+                  "aria-label": "Remove remote draft",
+                  onClick: () => onRemoveDraft(block),
+                },
+                "Remove draft",
+              )
+            : null,
+        ),
+      ),
     ),
 }));
 
@@ -100,7 +136,7 @@ beforeEach(() => {
         environmentId: "env",
         name: "home",
         providers: ["codex"],
-        capabilities: [],
+        capabilities: ["attachments.upload", "sessions.plan", "sessions.draft"],
       };
     if (method === "models.list") {
       if (catalog instanceof Error) throw catalog.message;
@@ -168,6 +204,8 @@ beforeEach(() => {
       if (syncDelay) await syncDelay;
       return { kind: "snapshot", value: host };
     }
+    if (method === "attachments.upload")
+      return { offset: (params as { size: number }).size };
     if (method === "commands.dispatch") return dispatch(params);
     throw new Error(`Unexpected method ${method}`);
   });
@@ -222,10 +260,40 @@ function dispatch(command: HostCommand) {
       session: {
         ...host.session,
         blocks: [
-          ...host.session.blocks,
+          ...host.session.blocks.filter(
+            (block) => block.id !== command.draftBlockId,
+          ),
           { id: command.commandId, role: "user", text: command.text },
           { id: `${command.commandId}-reply`, role: "assistant", text: "Done" },
         ],
+      },
+    };
+  } else if (host && command.type === "draft") {
+    host = {
+      ...host,
+      revision: host.revision + 1,
+      session: {
+        ...host.session,
+        blocks: [
+          ...host.session.blocks,
+          {
+            id: command.commandId,
+            role: "user",
+            text: command.text,
+            draft: true,
+          },
+        ],
+      },
+    };
+  } else if (host && command.type === "removeDraft") {
+    host = {
+      ...host,
+      revision: host.revision + 1,
+      session: {
+        ...host.session,
+        blocks: host.session.blocks.filter(
+          (block) => block.id !== command.draftBlockId,
+        ),
       },
     };
   }
@@ -317,10 +385,12 @@ it("uses the normal composer with the machine and host branch in its top row", a
   // Nothing from the old standalone remote view or local-only tools.
   expect(container.textContent).not.toContain("New remote session");
   expect(container.textContent).not.toContain("Apply settings");
-  // Attachments, plan/operator modes and drafts are hidden.
-  expect(
-    byLabel("Add files or choose a mode")?.closest(".hidden"),
-  ).not.toBeNull();
+  expect(byLabel("Add files or choose a mode")?.closest(".hidden")).toBeNull();
+  await act(async () => byLabel("Add files or choose a mode")!.click());
+  expect(document.body.textContent).toContain("Upload file");
+  expect(document.body.textContent).toContain("Plan mode");
+  expect(document.body.textContent).toContain("Draft");
+  expect(document.body.textContent).not.toContain("Operator");
   expect(byLabel("Project ")).toBeNull();
 });
 
@@ -423,6 +493,48 @@ it("creates the host session with the chosen settings on the first message", asy
   });
   expect(remoteSessionFor("shell")).toBe("host-session");
   expect(container.textContent).toContain("Fix the tests");
+});
+
+it("sends a remote plan turn from the plus menu", async () => {
+  await render();
+  await act(async () => byLabel("Add files or choose a mode")!.click());
+  const plan = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) => button.textContent?.includes("Plan mode"))!;
+  await act(async () => plan.click());
+  await send("Plan the migration");
+  expect(commands.at(-1)).toMatchObject({
+    type: "send",
+    text: "Plan the migration",
+    intent: "plan",
+  });
+});
+
+it("saves and sends a remote draft", async () => {
+  await render();
+  await act(async () => byLabel("Add files or choose a mode")!.click());
+  const draft = [
+    ...document.body.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((button) =>
+    button.textContent?.includes("Save this message without starting"),
+  )!;
+  await act(async () => draft.click());
+  await type("Review this later");
+  await act(async () => byLabel("Save draft")!.click());
+  await settle();
+  expect(commands.map((command) => command.type)).toEqual(["create", "draft"]);
+  expect(commands.at(-1)).toMatchObject({
+    type: "draft",
+    text: "Review this later",
+  });
+  expect(byLabel("Send remote draft")).not.toBeNull();
+  await act(async () => byLabel("Send remote draft")!.click());
+  await settle();
+  expect(commands.at(-1)).toMatchObject({
+    type: "send",
+    text: "Review this later",
+    draftBlockId: commands[1].commandId,
+  });
 });
 
 it("keeps a sent message visible until the host sync confirms it", async () => {

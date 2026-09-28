@@ -192,11 +192,10 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
-  /** Set for sessions that run on another machine. Replaces the local project
-   * and branch pickers, and turns off features that read this computer's
-   * files (attachments, @file mentions, skills) or its modes (plan, operator,
-   * orchestration, drafts). */
+  /** Set for sessions that run on another machine. Replaces local project and
+   * branch pickers and keeps local file mentions, skills, and app modes off. */
   remoteHost?: ReactNode;
+  remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
@@ -481,6 +480,7 @@ export function Composer({
   hideBranchPicker = false,
   hideTopBar = false,
   remoteHost,
+  remoteFeatures,
   context,
   compactSupported = false,
   quoteRequest,
@@ -651,7 +651,7 @@ export function Composer({
   const slashItems = useMemo(
     () =>
       remote
-        ? [COMPACT_COMMAND]
+        ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COMPACT_COMMAND]
         : [
             SESSION_FOLDER_COMMAND,
             OPERATOR_COMMAND,
@@ -670,13 +670,15 @@ export function Composer({
                     skill.name !== BTW_COMMAND.name)),
             ),
           ],
-    [harness, skills, remote],
+    [harness, skills, remote, remoteFeatures?.plan],
   );
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
   const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
-  const attachmentsSupported = !remote && harnessSupportsAttachments(harness);
+  const attachmentsSupported =
+    (!remote || !!remoteFeatures?.attachments) &&
+    harnessSupportsAttachments(harness);
   const skillNames = useMemo(
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
@@ -1146,6 +1148,7 @@ export function Composer({
     };
 
     const onExplorerFilePointerDrag = (event: Event) => {
+      if (remote) return;
       const detail = (event as CustomEvent<ExplorerFilePointerDragDetail>)
         .detail;
       if (!detail || detail.type === "end") {
@@ -1208,7 +1211,7 @@ export function Composer({
       );
       unlisten?.();
     };
-  }, [addAttachments, attachmentsSupported, enabled]);
+  }, [addAttachments, attachmentsSupported, enabled, remote]);
   const restoreDraft = useCallback(
     (
       text: string,
@@ -1972,7 +1975,7 @@ export function Composer({
           <div className="flex items-center gap-1 px-2 pb-2">
             <div
               ref={plusRef}
-              className={compact || remote ? "hidden" : "relative shrink-0"}
+              className={compact ? "hidden" : "relative shrink-0"}
             >
               <ToolButton
                 label="Add files or choose a mode"
@@ -2010,61 +2013,67 @@ export function Composer({
                       <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
                         {attachmentsSupported
                           ? "Attach files or images"
-                          : `${HARNESS_TITLE[harness]} does not support attachments`}
+                          : remote && !remoteFeatures?.attachments
+                            ? "Update this machine’s host to attach files"
+                            : `${HARNESS_TITLE[harness]} does not support attachments`}
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    aria-pressed={planSelected}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setPlanSelected((selected) => !selected);
-                      setOperatorSelected(false);
-                      setOrchestrationSelected(false);
-                      setDraftSelected(false);
-                      setPlusOpen(false);
-                      ref.current?.focus();
-                    }}
-                    className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
-                  >
-                    <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px]">Plan mode</span>
-                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                        Review a plan before building
+                  {!remote || remoteFeatures?.plan ? (
+                    <button
+                      type="button"
+                      aria-pressed={planSelected}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setPlanSelected((selected) => !selected);
+                        setOperatorSelected(false);
+                        setOrchestrationSelected(false);
+                        setDraftSelected(false);
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                      }}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                    >
+                      <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px]">Plan mode</span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
+                          Review a plan before building
+                        </span>
                       </span>
-                    </span>
-                    {planSelected ? (
-                      <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={operatorSelected}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      setOperatorSelected((selected) => !selected);
-                      setPlanSelected(false);
-                      setOrchestrationSelected(false);
-                      setDraftSelected(false);
-                      setPlusOpen(false);
-                      ref.current?.focus();
-                    }}
-                    className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
-                  >
-                    <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-sky-300/80" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px]">Operator</span>
-                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                        Give this thread access to MonoCode
+                      {planSelected ? (
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
+                      ) : null}
+                    </button>
+                  ) : null}
+                  {!remote ? (
+                    <button
+                      type="button"
+                      aria-pressed={operatorSelected}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setOperatorSelected((selected) => !selected);
+                        setPlanSelected(false);
+                        setOrchestrationSelected(false);
+                        setDraftSelected(false);
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                      }}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                    >
+                      <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-sky-300/80" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px]">Operator</span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
+                          Give this thread access to MonoCode
+                        </span>
                       </span>
-                    </span>
-                    {operatorSelected ? (
-                      <Check className="mt-0.5 size-3.5 shrink-0 text-sky-300/80" />
-                    ) : null}
-                  </button>
-                  {!hideTopBar && (
+                      {operatorSelected ? (
+                        <Check className="mt-0.5 size-3.5 shrink-0 text-sky-300/80" />
+                      ) : null}
+                    </button>
+                  ) : null}
+                  {!remote && !hideTopBar && (
                     <button
                       type="button"
                       aria-pressed={orchestrationSelected}

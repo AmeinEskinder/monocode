@@ -6,6 +6,7 @@ import type { SendTurnInput } from "../src/integrations/harness/core/types";
 import type { HostProvider } from "./providers";
 import { HostEngine, parseCommand } from "./engine";
 import { HostStore } from "./store";
+import { writeAttachmentChunk } from "./attachments";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -60,6 +61,142 @@ function setup(harness: "codex" | "claude" = "codex") {
 }
 
 describe("headless session ownership", () => {
+  it("stores a remote draft with an uploaded file, then sends it in plan mode", async () => {
+    const { engine, store, turns, id } = setup();
+    const fileId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(
+      writeAttachmentChunk(store, {
+        id: fileId,
+        offset: 0,
+        size: 5,
+        data: Buffer.from("hello").toString("base64"),
+      }),
+    ).toEqual({ offset: 5 });
+    const attachment = {
+      id: fileId,
+      name: "notes.txt",
+      mimeType: "text/plain",
+      kind: "file" as const,
+      size: 5,
+    };
+    engine.command({
+      type: "draft",
+      commandId: "draft-1",
+      sessionId: id,
+      text: "Plan this",
+      attachments: [attachment],
+    });
+    expect(store.session(id).session.blocks[0]).toMatchObject({
+      draft: true,
+      attachments: [{ name: "notes.txt" }],
+    });
+    expect(store.summaries(store.session(id).projectId)[0].draft).toBe(true);
+    engine.command({
+      type: "send",
+      commandId: "send-draft",
+      sessionId: id,
+      text: "Plan this",
+      intent: "plan",
+      draftBlockId: "draft-1",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(turns[0].input).toMatchObject({
+      intent: "plan",
+      attachments: [{ name: "notes.txt", size: 5 }],
+    });
+    expect(turns[0].input.attachments?.[0].path).toContain(fileId);
+    expect(store.summaries(store.session(id).projectId)[0].draft).toBe(false);
+    turns[0].finish();
+  });
+
+  it("passes an uploaded image to the host provider on an attachment-only turn", async () => {
+    const { engine, store, turns, id } = setup("claude");
+    const fileId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const image = Buffer.from("image-bytes");
+    writeAttachmentChunk(store, {
+      id: fileId,
+      offset: 0,
+      size: image.length,
+      data: image.toString("base64"),
+    });
+    engine.command({
+      type: "send",
+      commandId: "image-turn",
+      sessionId: id,
+      text: "",
+      attachments: [
+        {
+          id: fileId,
+          name: "shot.png",
+          mimeType: "image/png",
+          kind: "image",
+          size: image.length,
+        },
+      ],
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(turns[0].input.attachments?.[0]).toMatchObject({
+      name: "shot.png",
+      data: image.toString("base64"),
+    });
+    turns[0].finish();
+  });
+
+  it("removes a remote draft without starting the provider", () => {
+    const { engine, store, provider, id } = setup();
+    engine.command({
+      type: "draft",
+      commandId: "draft-2",
+      sessionId: id,
+      text: "Later",
+    });
+    engine.command({
+      type: "removeDraft",
+      commandId: "remove-2",
+      sessionId: id,
+      draftBlockId: "draft-2",
+    });
+    expect(store.session(id).session.blocks).toEqual([]);
+    expect(provider.send).not.toHaveBeenCalled();
+  });
+
+  it("marks a reviewed host plan as built after its build turn", async () => {
+    const { engine, store, turns, id } = setup();
+    engine.command({
+      type: "send",
+      commandId: "plan-turn",
+      sessionId: id,
+      text: "Plan this",
+      intent: "plan",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    turns[0].input.onEvent({ type: "plan", text: "# Steps\n\n1. Change code" });
+    turns[0].finish();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+    const plan = store
+      .session(id)
+      .session.blocks.find((block) => block.role === "plan")!;
+    engine.command({
+      type: "send",
+      commandId: "build-turn",
+      sessionId: id,
+      text: `Build the approved plan:\n\n${plan.text}`,
+      intent: "build",
+      planBlockId: plan.id,
+    });
+    expect(
+      store.session(id).session.blocks.find((block) => block.id === plan.id)
+        ?.plan?.status,
+    ).toBe("building");
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    turns[1].finish();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+    expect(
+      store.session(id).session.blocks.find((block) => block.id === plan.id)
+        ?.plan?.status,
+    ).toBe("built");
+  });
+
   it("keeps a manually renamed title when first-turn generation finishes later", async () => {
     const { engine, store, provider, turns, id } = setup();
     let finishTitle: (title: {

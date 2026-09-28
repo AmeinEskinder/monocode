@@ -12,6 +12,7 @@ import {
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import { writeAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
@@ -190,6 +191,9 @@ export function createHostServer(
                 "git.index",
                 "git.fileDiff",
                 "git.action",
+                "attachments.upload",
+                "sessions.draft",
+                "sessions.plan",
               ],
             };
             break;
@@ -307,6 +311,9 @@ export function createHostServer(
           }
           case "commands.dispatch":
             result = engine.command(params);
+            break;
+          case "attachments.upload":
+            result = writeAttachmentChunk(engine.store, params);
             break;
           case "devices.revokeSelf":
             // Only the caller's own credential. Sessions and other devices

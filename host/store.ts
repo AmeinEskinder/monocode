@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash, randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 import type {
   CommandReceipt,
   HostProject,
@@ -16,12 +17,14 @@ const CACHED_SESSIONS = 32;
 export class HostStore {
   readonly db: DatabaseSync;
   readonly environmentId: string;
+  readonly attachmentDir: string;
   // This process is the only session writer, so recently used snapshots are
   // served from memory instead of re-parsing whole transcripts. Callers must
   // treat returned values as immutable.
   private cache = new Map<string, HostSession>();
 
   constructor(path: string) {
+    this.attachmentDir = join(dirname(path), "attachments");
     this.db = new DatabaseSync(path);
     this.db
       .exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
@@ -317,6 +320,7 @@ export function summary(value: HostSession): HostSessionSummary {
     pinned: value.pinned,
     linkedWorkItem: value.session.linkedWorkItem,
     needsInput: sessionNeedsInput(value.session),
+    draft: value.session.blocks.some((block) => block.role === "user" && block.draft),
   };
 }
 

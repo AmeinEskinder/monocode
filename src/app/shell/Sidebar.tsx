@@ -511,6 +511,7 @@ function SidebarComponent({
         archived: session.archived,
         pinned: session.pinned,
         linkedWorkItem: session.linkedWorkItem,
+        draft: session.draft,
         repo: session.repo,
         branch: session.branch,
         worktreeCwd: session.worktreeCwd,

@@ -177,6 +177,7 @@ type Props = {
   onOpenDiff?: (path: string) => void;
   onOpenPlan?: (blockId: string) => void;
   onBuildPlan?: (blockId: string, target?: PlanBuildTarget) => void;
+  planBuildTargets?: boolean;
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onBtwSubmit?: (
@@ -237,6 +238,7 @@ function AgentTranscriptComponent({
   onOpenDiff,
   onOpenPlan,
   onBuildPlan,
+  planBuildTargets = true,
   onSecondOpinion,
   onHandoff,
   onBtwSubmit,
@@ -818,7 +820,7 @@ function AgentTranscriptComponent({
                 onOpenPlan={onOpenPlan}
                 onBuildPlan={onBuildPlan}
                 planBusy={!!busy}
-                planHarness={harness}
+                planHarness={planBuildTargets ? harness : undefined}
                 planModel={model}
                 planModelSettings={modelSettings}
                 cwd={cwd}

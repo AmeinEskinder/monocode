@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { renameHostWorktreeBranch, resolveHostWorktree } from "./git-worktrees";
 import {
@@ -7,6 +8,7 @@ import {
   stopStreaming,
 } from "../src/integrations/harness/core/apply";
 import { resolveModel } from "../src/features/sessions/model/models";
+import { isVisionImage } from "../src/features/sessions/model/attachments";
 import type {
   HarnessEvent,
   HarnessSessionInput,
@@ -29,6 +31,7 @@ import {
 } from "../src/features/connections/model/protocol";
 import type { HostProvider } from "./providers";
 import { HostStore } from "./store";
+import { parseRemoteAttachments, resolveAttachments } from "./attachments";
 
 // Streamed output is written in batches. Anything a user may need to act on
 // (approvals, questions, errors, completion) is written immediately.
@@ -121,12 +124,51 @@ export function parseCommand(input: unknown): HostCommand {
     };
   }
   if (v.type === "compact") return { type: "compact", commandId, sessionId };
-  if (v.type === "send")
+  if (v.type === "send" || v.type === "draft") {
+    const attachments = parseRemoteAttachments(v.attachments);
+    if (
+      typeof v.text !== "string" ||
+      v.text.length > 256_000 ||
+      v.text.includes("\0") ||
+      (!v.text.trim() &&
+        attachments.length === 0 &&
+        !(v.type === "send" && v.draftBlockId !== undefined))
+    )
+      throw new Error("Invalid prompt");
+    if (
+      v.type === "send" &&
+      v.intent !== undefined &&
+      !["default", "plan", "build"].includes(String(v.intent))
+    )
+      throw new Error("Invalid turn intent");
+    if (
+      v.planBlockId !== undefined &&
+      (v.type !== "send" || v.intent !== "build")
+    )
+      throw new Error("Invalid plan build");
     return {
-      type: "send",
+      type: v.type,
       commandId,
       sessionId,
-      text: text(v.text, "prompt", 256_000),
+      text: v.text,
+      ...(attachments.length ? { attachments } : {}),
+      ...(v.type === "send" && v.intent
+        ? { intent: v.intent as "default" | "plan" | "build" }
+        : {}),
+      ...(v.type === "send" && v.draftBlockId !== undefined
+        ? { draftBlockId: text(v.draftBlockId, "draft block ID") }
+        : {}),
+      ...(v.type === "send" && v.planBlockId !== undefined
+        ? { planBlockId: text(v.planBlockId, "plan block ID") }
+        : {}),
+    };
+  }
+  if (v.type === "removeDraft")
+    return {
+      type: "removeDraft",
+      commandId,
+      sessionId,
+      draftBlockId: text(v.draftBlockId, "draft block ID"),
     };
   const runId = text(v.runId, "run ID");
   if (v.type === "cancel")
@@ -428,6 +470,53 @@ export class HostEngine {
               runtimeMode: command.runtimeMode,
             },
           };
+        } else if (command.type === "draft") {
+          if (
+            value.status === "running" ||
+            value.session.blocks.some((block) => block.draft)
+          )
+            throw new Error("This session cannot save another draft right now");
+          const attachments = resolveAttachments(
+            this.store,
+            command.attachments ?? [],
+          );
+          value = {
+            ...value,
+            session: {
+              ...value.session,
+              title: value.session.blocks.length
+                ? value.session.title
+                : titleFromPrompt(
+                    command.text,
+                    value.session.harness,
+                    attachments,
+                  ),
+              blocks: [
+                ...value.session.blocks,
+                {
+                  id: command.commandId,
+                  role: "user",
+                  text: command.text,
+                  ...(attachments.length ? { attachments } : {}),
+                  draft: true,
+                },
+              ],
+            },
+          };
+        } else if (command.type === "removeDraft") {
+          const draft = value.session.blocks.find(
+            (block) => block.id === command.draftBlockId && block.draft,
+          );
+          if (!draft) throw new Error("Draft not found");
+          value = {
+            ...value,
+            session: {
+              ...value.session,
+              blocks: value.session.blocks.filter(
+                (block) => block.id !== draft.id,
+              ),
+            },
+          };
         } else if (command.type === "send" || command.type === "compact") {
           if (value.status === "running")
             throw new Error("This session is already running");
@@ -435,9 +524,40 @@ export class HostEngine {
             throw new Error(
               "Context compaction is unavailable for this provider",
             );
+          const draft =
+            command.type === "send" && command.draftBlockId
+              ? value.session.blocks.find(
+                  (block) => block.id === command.draftBlockId && block.draft,
+                )
+              : undefined;
+          if (command.type === "send" && command.draftBlockId && !draft)
+            throw new Error("Draft not found");
+          const plan =
+            command.type === "send" && command.planBlockId
+              ? value.session.blocks.find(
+                  (block) =>
+                    block.id === command.planBlockId && block.role === "plan",
+                )
+              : undefined;
+          if (
+            command.type === "send" &&
+            command.planBlockId &&
+            (!plan ||
+              !plan.text.trim() ||
+              plan.streaming ||
+              plan.plan?.status === "building" ||
+              plan.plan?.status === "built")
+          )
+            throw new Error("Plan is not ready to build");
+          const attachments =
+            command.type === "send"
+              ? (draft?.attachments ??
+                resolveAttachments(this.store, command.attachments ?? []))
+              : [];
           const runId = randomUUID();
           const firstTurn =
-            command.type === "send" && !value.session.blocks.length;
+            command.type === "send" &&
+            !value.session.blocks.some((block) => !block.draft);
           const placeholderTitle =
             value.session.title === "New remote session" ||
             canReplaceSessionTitle(
@@ -459,14 +579,32 @@ export class HostEngine {
               pendingQuestion: undefined,
               title:
                 firstTurn && placeholderTitle
-                  ? titleFromPrompt(command.text, value.session.harness)
+                  ? titleFromPrompt(
+                      command.text,
+                      value.session.harness,
+                      attachments,
+                    )
                   : value.session.title,
               blocks: [
-                ...value.session.blocks,
+                ...value.session.blocks
+                  .filter((block) => block !== draft)
+                  .map((block) =>
+                    block === plan
+                      ? {
+                          ...block,
+                          plan: {
+                            ...(block.plan ?? { status: "ready" as const }),
+                            status: "building" as const,
+                            approvedText: block.text,
+                          },
+                        }
+                      : block,
+                  ),
                 {
                   id: command.commandId,
                   role: "user",
                   text: command.type === "compact" ? "/compact" : command.text,
+                  ...(attachments.length ? { attachments } : {}),
                   startedAt: Date.now(),
                   turnModel: {
                     harness: value.session.harness,
@@ -481,7 +619,12 @@ export class HostEngine {
             },
           };
           effect = (saved) => {
-            this.run(saved, command.type === "compact" ? null : command.text);
+            this.run(
+              saved,
+              command.type === "compact" ? null : command.text,
+              command.type === "send" ? command.intent : undefined,
+              attachments,
+            );
             if (firstTurn && command.type === "send") {
               this.generateFirstTurnNames(
                 saved,
@@ -619,7 +762,12 @@ export class HostEngine {
     }
   }
 
-  private run(value: HostSession, prompt: string | null): void {
+  private run(
+    value: HostSession,
+    prompt: string | null,
+    intent?: "default" | "plan" | "build",
+    attachments: Session["blocks"][number]["attachments"] = [],
+  ): void {
     const { session, runId } = value;
     const provider = this.provider(session.harness);
     const active = { runId: runId!, done: Promise.resolve(), cancelled: false };
@@ -636,10 +784,25 @@ export class HostEngine {
               model: session.model,
               modelSettings: session.modelSettings,
               runtimeMode: session.runtimeMode,
+              intent,
               onEvent: (event) => this.event(session.id, runId!, event),
             };
             if (prompt === null) await provider.compact!(input);
-            else await provider.send({ ...input, text: prompt });
+            else
+              await provider.send({
+                ...input,
+                text: prompt,
+                attachments: attachments?.map((file) =>
+                  isVisionImage(file.mimeType) &&
+                  file.path &&
+                  file.size <= 20 * 1024 * 1024
+                    ? {
+                        ...file,
+                        data: readFileSync(file.path).toString("base64"),
+                      }
+                    : file,
+                ),
+              });
           }
         } catch (reason) {
           error = reason instanceof Error ? reason.message : String(reason);
@@ -708,7 +871,20 @@ export class HostEngine {
     const stopped = stopStreaming(value.session, endedAt);
     const session = {
       ...stopped,
-      blocks: [...stopped.blocks],
+      blocks: stopped.blocks.map((block) =>
+        block.role === "plan" && block.plan?.status === "building"
+          ? {
+              ...block,
+              plan: {
+                ...block.plan,
+                status:
+                  status === "idle" && !message
+                    ? ("built" as const)
+                    : ("ready" as const),
+              },
+            }
+          : block,
+      ),
     };
     if (message)
       session.blocks.push({

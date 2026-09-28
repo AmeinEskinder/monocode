@@ -233,6 +233,7 @@ export type SessionPaneProps = {
 type Props = SessionPaneProps & {
   /** Set for a session running on another machine; see Composer. */
   remoteHost?: ReactNode;
+  remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
   remoteSessionStarted?: boolean;
   remoteSessionLoading?: boolean;
   allowedModelHarnesses?: readonly HarnessId[];
@@ -256,6 +257,7 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
 
 const LocalSessionPane = memo(function LocalSessionPane({
   remoteHost,
+  remoteFeatures,
   remoteSessionStarted = false,
   remoteSessionLoading = false,
   allowedModelHarnesses,
@@ -334,7 +336,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const remote = remoteHost != null;
   const editLastTurnSupported = !remote && canEditLastTurn(session);
   const turnRecall = editLastTurnSupported ? lastTurnRecall(session) : null;
-  const draftBlock = remote ? undefined : sessionDraftBlock(session);
+  const draftBlock = sessionDraftBlock(session);
   useSyncExternalStore(
     subscribeProjectChatBackground,
     projectChatBackgroundRevision,
@@ -563,6 +565,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const composer = (
     <Composer
       remoteHost={remoteHost}
+      remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}
       focused={focused && composerFocused}
@@ -646,6 +649,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onRuntimeModeChange={(mode) => onRuntimeModeChange(session.id, mode)}
       canSaveDraft={
+        (!remote || !!remoteFeatures?.draft) &&
         !session.busy &&
         !draftBlock &&
         !session.inboxAsk &&
@@ -870,6 +874,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   onOpenDiff={onOpenDiff}
                   onOpenPlan={openPlan}
                   onBuildPlan={session.worktreeRemoved ? undefined : buildPlan}
+                  planBuildTargets={!remote}
                   onSecondOpinion={
                     !session.inboxAsk &&
                     !session.worktreeRemoved &&

@@ -109,6 +109,23 @@ async function setup() {
 }
 
 describe("remote host API", () => {
+  it("uploads an authenticated attachment and sends its host path to the provider", async () => {
+    const s = await setup();
+    const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const upload = { id, offset: 0, size: 5, data: Buffer.from("hello").toString("base64") };
+    expect((await s.call("attachments.upload", upload, "invalid")).status).toBe(401);
+    expect((await s.call("attachments.upload", upload)).value.result).toEqual({ offset: 5 });
+    const created = await s.call("commands.dispatch", { type: "create", commandId: "upload-create",
+      projectId: s.project.id, harness: "codex", model: "codex:test", runtimeMode: "supervised" });
+    const sessionId = created.value.result.sessionId;
+    const sent = await s.call("commands.dispatch", { type: "send", commandId: "upload-send",
+      sessionId, text: "Read this", attachments: [{ id, name: "notes.txt",
+        mimeType: "text/plain", kind: "file", size: 5 }] });
+    expect(sent.status).toBe(200);
+    await vi.waitFor(() => expect(s.send).toHaveBeenCalledTimes(1));
+    expect(s.turn().attachments?.[0].path).toContain(id);
+    s.finish();
+  });
   it("applies card actions to the owning project and lists their saved state", async () => {
     const s = await setup();
     const create = await s.call("commands.dispatch", {

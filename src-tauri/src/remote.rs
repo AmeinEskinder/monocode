@@ -353,6 +353,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "sessions.sync"
             | "sessions.syncChunk"
             | "commands.dispatch"
+            | "attachments.upload"
             | "devices.revokeSelf"
             | "git.diff"
             | "git.branches"
@@ -629,13 +630,14 @@ pub fn remote_ssh_cancel(
 mod tests {
     use super::*;
     #[test]
-    fn desktop_forwards_host_git_picker_operations() {
+    fn desktop_forwards_supported_host_operations() {
         for method in [
             "git.branches",
             "git.switch",
             "git.createBranch",
             "git.worktrees",
             "git.worktreeCreate",
+            "attachments.upload",
         ] {
             assert!(supported_remote_method(method), "{method}");
         }

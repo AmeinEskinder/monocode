@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
 import type {
+  Attachment,
   Block,
+  ComposerTurnOptions,
   HarnessId,
   RuntimeMode,
   Session,
   WorkspaceMode,
 } from "../../sessions/model/session";
+import { uploadRemoteAttachments } from "../model/remoteAttachments";
 import { temporaryWorktreeBranchName } from "../../source-control/model/worktrees";
 import type { AgentModel } from "../../sessions/model/models";
 import {
@@ -55,6 +58,7 @@ import {
   type HostModelCatalog,
   type HostSession,
   type HostWorktree,
+  type RemoteAttachment,
   type RemoteMachine,
   type RemoteProvider,
 } from "../model/protocol";
@@ -62,6 +66,7 @@ import { RemoteWorktreePicker } from "./RemoteWorktreePicker";
 
 export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteHost: ReactNode;
+  remoteFeatures: { attachments: boolean; plan: boolean; draft: boolean };
   remoteSessionStarted: boolean;
   remoteSessionLoading: boolean;
   allowedModelHarnesses: readonly HarnessId[];
@@ -77,6 +82,11 @@ type Configuration = {
 type OptimisticTurn = {
   commandId: string;
   text: string;
+  attachments: Attachment[];
+  intent: "default" | "plan" | "build";
+  draft?: boolean;
+  draftBlockId?: string;
+  planBlockId?: string;
   startedAt: number;
   turnModel: NonNullable<Block["turnModel"]>;
 };
@@ -221,8 +231,14 @@ function ConnectedRemoteSession({
   const [preview, setPreview] = useState<{ title: string; text: string }>();
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
+  const preparingRef = useRef(false);
   const [unseenSend, setUnseenSend] = useState<
-    OptimisticTurn & { sessionId: string }
+    Pick<
+      OptimisticTurn,
+      "commandId" | "text" | "startedAt" | "turnModel" | "attachments"
+    > & {
+      sessionId: string;
+    }
   >();
   // A first message waits here while its session is created on the host.
   const [starting, setStarting] = useState<
@@ -484,9 +500,21 @@ function ConnectedRemoteSession({
         configuration.model,
       )?.name ?? configuration.model.replace(/^[^:]+:/, ""),
   });
-  const optimisticTurn = (text: string): OptimisticTurn => ({
+  const optimisticTurn = (
+    text: string,
+    attachments: Attachment[] = [],
+    intent: "default" | "plan" | "build" = "default",
+    draft = false,
+    draftBlockId?: string,
+    planBlockId?: string,
+  ): OptimisticTurn => ({
     commandId: crypto.randomUUID(),
     text,
+    attachments,
+    intent,
+    draft,
+    draftBlockId,
+    planBlockId,
     startedAt: Date.now(),
     turnModel: selectedTurnModel(),
   });
@@ -507,6 +535,7 @@ function ConnectedRemoteSession({
               sessionId: command.sessionId,
               commandId: command.commandId,
               text: command.type === "send" ? command.text : "/compact",
+              attachments: optimistic?.attachments ?? [],
               startedAt: optimistic?.startedAt ?? Date.now(),
               turnModel: optimistic?.turnModel ?? selectedTurnModel(),
             },
@@ -606,83 +635,187 @@ function ConnectedRemoteSession({
       });
   });
 
-  const startSession = async (turn: OptimisticTurn) => {
-    let worktreeCwd = selectedCwd;
-    let autoWorktreeBranch: string | undefined;
-    if (draftWorkspaceMode === "worktree") {
-      try {
-        const tree = await remoteRequest<HostWorktree>(
-          machine.id,
-          "git.worktreeCreate",
-          {
-            projectId: project.projectId,
-            cwd: selectedCwd,
-            branch: temporaryWorktreeBranchName(),
-            base: draftWorktreeBase,
-            existing: false,
-          },
-        );
-        worktreeCwd = tree.path;
-        autoWorktreeBranch = tree.branch ?? undefined;
-        rememberRemotePendingWorktree(shell.id, tree.path);
-        if (alive.current) {
-          setSelectedCwd(tree.path);
-          setDraftWorkspaceMode("current");
-        }
-      } catch (reason) {
-        if (alive.current) {
-          setError(String(reason));
-          setStarting({ ...turn, failed: true });
-        }
-        return;
-      }
-    }
-    const receipt = await run({
-      type: "create",
-      commandId: crypto.randomUUID(),
-      projectId: project.projectId,
-      ...(worktreeCwd !== project.cwd ? { worktreeCwd } : {}),
-      ...(autoWorktreeBranch ? { autoWorktreeBranch } : {}),
-      harness: draft.harness,
-      model: draft.model,
-      modelSettings: draft.settings,
-      runtimeMode: draft.mode,
-    });
-    if (!receipt) {
-      if (alive.current) setStarting({ ...turn, failed: true });
-      return;
-    }
-    if (alive.current) {
-      openSession(receipt.sessionId);
-    }
-    const sent = await run(
-      message(receipt.sessionId, turn.text, turn.commandId),
+  const dispatchTurn = async (
+    id: string,
+    turn: OptimisticTurn,
+    uploaded?: RemoteAttachment[],
+  ) => {
+    const refs = turn.draftBlockId
+      ? []
+      : (uploaded ??
+        (await uploadRemoteAttachments(machine.id, turn.attachments)));
+    return run(
+      turn.draft
+        ? {
+            type: "draft",
+            commandId: turn.commandId,
+            sessionId: id,
+            text: turn.text,
+            attachments: refs,
+          }
+        : message(
+            id,
+            turn.text,
+            turn.commandId,
+            refs,
+            turn.intent,
+            turn.draftBlockId,
+            turn.planBlockId,
+          ),
       turn,
     );
-    if (alive.current)
-      setStarting(sent ? undefined : { ...turn, failed: true });
+  };
+
+  const startSession = async (turn: OptimisticTurn) => {
+    try {
+      const uploaded = await uploadRemoteAttachments(
+        machine.id,
+        turn.attachments,
+      );
+      let worktreeCwd = selectedCwd;
+      let autoWorktreeBranch: string | undefined;
+      if (draftWorkspaceMode === "worktree") {
+        try {
+          const tree = await remoteRequest<HostWorktree>(
+            machine.id,
+            "git.worktreeCreate",
+            {
+              projectId: project.projectId,
+              cwd: selectedCwd,
+              branch: temporaryWorktreeBranchName(),
+              base: draftWorktreeBase,
+              existing: false,
+            },
+          );
+          worktreeCwd = tree.path;
+          autoWorktreeBranch = tree.branch ?? undefined;
+          rememberRemotePendingWorktree(shell.id, tree.path);
+          if (alive.current) {
+            setSelectedCwd(tree.path);
+            setDraftWorkspaceMode("current");
+          }
+        } catch (reason) {
+          if (alive.current) {
+            setError(String(reason));
+            setStarting({ ...turn, failed: true });
+          }
+          return;
+        }
+      }
+      const receipt = await run({
+        type: "create",
+        commandId: crypto.randomUUID(),
+        projectId: project.projectId,
+        ...(worktreeCwd !== project.cwd ? { worktreeCwd } : {}),
+        ...(autoWorktreeBranch ? { autoWorktreeBranch } : {}),
+        harness: draft.harness,
+        model: draft.model,
+        modelSettings: draft.settings,
+        runtimeMode: draft.mode,
+      });
+      if (!receipt) {
+        if (alive.current) setStarting({ ...turn, failed: true });
+        return;
+      }
+      if (alive.current) {
+        openSession(receipt.sessionId);
+      }
+      const sent = await dispatchTurn(receipt.sessionId, turn, uploaded);
+      if (alive.current)
+        setStarting(sent ? undefined : { ...turn, failed: true });
+    } catch (reason) {
+      if (alive.current) {
+        setError(String(reason));
+        setStarting({ ...turn, failed: true });
+      }
+    } finally {
+      preparingRef.current = false;
+    }
   };
 
   const message = (
     id: string,
     text: string,
     commandId: string = crypto.randomUUID(),
+    attachments: RemoteAttachment[] = [],
+    intent: "default" | "plan" | "build" = "default",
+    draftBlockId?: string,
+    planBlockId?: string,
   ): HostCommand =>
-    text.trim().toLowerCase() === "/compact"
+    text.trim().toLowerCase() === "/compact" &&
+    !attachments.length &&
+    !draftBlockId &&
+    intent === "default"
       ? { type: "compact", commandId, sessionId: id }
-      : { type: "send", commandId, sessionId: id, text };
+      : {
+          type: "send",
+          commandId,
+          sessionId: id,
+          text,
+          attachments,
+          intent,
+          ...(draftBlockId ? { draftBlockId } : {}),
+          ...(planBlockId ? { planBlockId } : {}),
+        };
 
-  const submit = (text: string): boolean => {
-    if (!online || sending || pending || busy || !text.trim()) return false;
+  const submit = (
+    text: string,
+    attachments: Attachment[] = [],
+    options?: ComposerTurnOptions,
+    asDraft = false,
+    planBlockId?: string,
+  ): boolean => {
+    if (
+      !online ||
+      sending ||
+      preparingRef.current ||
+      pending ||
+      busy ||
+      (!text.trim() && !attachments.length)
+    )
+      return false;
+    const intent =
+      options?.intent === "plan" || options?.intent === "build"
+        ? options.intent
+        : "default";
+    const turn = optimisticTurn(
+      text,
+      attachments,
+      intent,
+      asDraft,
+      options?.draftBlockId,
+      planBlockId,
+    );
+    preparingRef.current = true;
+    setStarting(turn);
     if (!hostSession) {
-      if (sessionId || !draft.model) return false;
-      const turn = optimisticTurn(text);
-      setStarting(turn);
+      if (sessionId || !draft.model) {
+        preparingRef.current = false;
+        setStarting(undefined);
+        return false;
+      }
       void startSession(turn);
       return true;
     }
-    if (changes) return false;
-    void run(message(hostSession.id, text));
+    if (changes) {
+      preparingRef.current = false;
+      setStarting(undefined);
+      return false;
+    }
+    void dispatchTurn(hostSession.id, turn)
+      .then((receipt) => {
+        if (alive.current)
+          setStarting(receipt ? undefined : { ...turn, failed: true });
+      })
+      .catch((reason) => {
+        if (alive.current) {
+          setError(String(reason));
+          setStarting({ ...turn, failed: true });
+        }
+      })
+      .finally(() => {
+        preparingRef.current = false;
+      });
     return true;
   };
 
@@ -765,6 +898,7 @@ function ConnectedRemoteSession({
           id: unseenSend.commandId,
           role: "user",
           text: unseenSend.text,
+          attachments: unseenSend.attachments,
           startedAt: unseenSend.startedAt,
           turnModel: unseenSend.turnModel,
         }
@@ -779,6 +913,8 @@ function ConnectedRemoteSession({
               id: starting.commandId,
               role: "user",
               text: starting.text,
+              attachments: starting.attachments,
+              draft: starting.draft,
               startedAt: starting.startedAt,
               turnModel: starting.turnModel,
             }
@@ -803,19 +939,30 @@ function ConnectedRemoteSession({
     ? { text: `Reconnecting to ${machine.name}…`, detail: connectionError }
     : starting?.failed
       ? {
-          text: `Couldn’t start the session on ${machine.name}.`,
+          text: `Couldn’t ${starting.draft ? "save the draft" : "send the message"} on ${machine.name}.`,
           detail: error,
           action: {
             label: "Try again",
             run: () => {
-              const turn = optimisticTurn(starting.text);
+              const turn = starting;
               setStarting(turn);
-              void (sessionId
-                ? run(message(sessionId, turn.text, turn.commandId), turn).then(
-                    (sent) =>
-                      setStarting(sent ? undefined : { ...turn, failed: true }),
-                  )
-                : startSession(turn));
+              preparingRef.current = true;
+              if (!sessionId) void startSession(turn);
+              else
+                void dispatchTurn(sessionId, turn)
+                  .then((sent) => {
+                    if (alive.current)
+                      setStarting(sent ? undefined : { ...turn, failed: true });
+                  })
+                  .catch((reason) => {
+                    if (alive.current) {
+                      setError(String(reason));
+                      setStarting({ ...turn, failed: true });
+                    }
+                  })
+                  .finally(() => {
+                    preparingRef.current = false;
+                  });
             },
           },
         }
@@ -920,6 +1067,11 @@ function ConnectedRemoteSession({
   const overrides: RemoteSessionOverrides = {
     session,
     remoteHost,
+    remoteFeatures: {
+      attachments: !!descriptor?.capabilities.includes("attachments.upload"),
+      plan: !!descriptor?.capabilities.includes("sessions.plan"),
+      draft: !!descriptor?.capabilities.includes("sessions.draft"),
+    },
     remoteSessionStarted: !!sessionId,
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     allowedModelHarnesses: hostSession
@@ -927,7 +1079,8 @@ function ConnectedRemoteSession({
       : providers.length
         ? providers
         : ["codex", "claude"],
-    onSubmit: (_, text) => submit(text),
+    onSubmit: (_, text, attachments, options) =>
+      submit(text, attachments, options),
     onStop: () => {
       if (hostSession?.busy && snapshot?.runId)
         void run({
@@ -989,8 +1142,18 @@ function ConnectedRemoteSession({
     onWorkspaceModeChange: noop,
     onWorktreeBaseChange: noop,
     onManageWorktrees: undefined,
-    onSaveDraft: () => false,
-    onRemoveDraft: () => false,
+    onSaveDraft: (_, text, attachments) =>
+      submit(text, attachments, undefined, true),
+    onRemoveDraft: (_, draftBlockId) => {
+      if (!hostSession || busy || pending || !online) return false;
+      void run({
+        type: "removeDraft",
+        commandId: crypto.randomUUID(),
+        sessionId: hostSession.id,
+        draftBlockId,
+      });
+      return true;
+    },
     onPlaceSessionInFolder: noop,
     onDeleteQueuedMessage: noop,
     onEditQueuedMessage: noop,
@@ -1000,8 +1163,38 @@ function ConnectedRemoteSession({
     onUsageLimitResume: noop,
     onUsageLimitResumeAtReset: noop,
     onUsageLimitDismiss: noop,
-    onOpenPlan: noop,
-    onBuildPlan: noop,
+    onOpenPlan: (_, blockId) => {
+      const block = hostSession?.blocks.find(
+        (entry) => entry.id === blockId && entry.role === "plan",
+      );
+      if (block) setPreview({ title: "Plan", text: block.text });
+    },
+    onBuildPlan: (_, blockId, target) => {
+      const block = hostSession?.blocks.find(
+        (entry) => entry.id === blockId && entry.role === "plan",
+      );
+      if (!block || !block.text.trim() || block.streaming || busy) return;
+      if (
+        target &&
+        (target.harness !== configuration.harness ||
+          target.model !== configuration.model ||
+          !sameModelSettings(target.modelSettings, configuration.settings))
+      ) {
+        setError(
+          "Select that model in the composer before building this remote plan.",
+        );
+        return;
+      }
+      submit(
+        `Build the approved plan:\n\n${block.text}`,
+        [],
+        {
+          intent: "build",
+        },
+        false,
+        blockId,
+      );
+    },
     onSecondOpinion: undefined,
     onHandoff: undefined,
     onBtwSubmit: undefined,

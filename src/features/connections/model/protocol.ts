@@ -66,6 +66,15 @@ export type HostSessionSummary = Omit<
   branch?: string;
   worktreeCwd?: string;
   repo?: string;
+  draft?: boolean;
+};
+
+export type RemoteAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  kind: "image" | "audio" | "file";
+  size: number;
 };
 
 /** `sessions.sync` sends only the blocks that changed after the client's
@@ -143,7 +152,29 @@ export type HostCommand =
       runtimeMode: RuntimeMode;
     }
   | { type: "compact"; commandId: string; sessionId: string }
-  | { type: "send"; commandId: string; sessionId: string; text: string }
+  | {
+      type: "send";
+      commandId: string;
+      sessionId: string;
+      text: string;
+      attachments?: RemoteAttachment[];
+      intent?: "default" | "plan" | "build";
+      draftBlockId?: string;
+      planBlockId?: string;
+    }
+  | {
+      type: "draft";
+      commandId: string;
+      sessionId: string;
+      text: string;
+      attachments?: RemoteAttachment[];
+    }
+  | {
+      type: "removeDraft";
+      commandId: string;
+      sessionId: string;
+      draftBlockId: string;
+    }
   | { type: "cancel"; commandId: string; sessionId: string; runId: string }
   | {
       type: "approve";
