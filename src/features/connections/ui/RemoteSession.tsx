@@ -67,7 +67,6 @@ import { RemoteWorktreePicker } from "./RemoteWorktreePicker";
 export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteHost: ReactNode;
   remoteFeatures: { attachments: boolean; plan: boolean; draft: boolean };
-  remoteSessionStarted: boolean;
   remoteSessionLoading: boolean;
   allowedModelHarnesses: readonly HarnessId[];
 };
@@ -254,7 +253,12 @@ function ConnectedRemoteSession({
   const [unseenSend, setUnseenSend] = useState<
     Pick<
       OptimisticTurn,
-      "commandId" | "text" | "startedAt" | "turnModel" | "attachments"
+      | "commandId"
+      | "text"
+      | "startedAt"
+      | "turnModel"
+      | "attachments"
+      | "draftBlockId"
     > & {
       sessionId: string;
     }
@@ -317,6 +321,22 @@ function ConnectedRemoteSession({
     !hasHostBlock(pending.commandId);
   const busy =
     !!hostSession?.busy || unseenActive || startingActive || pendingSendActive;
+  // An accepted turn stays on screen until a sync shows the host's copy, so
+  // the transcript never drops it for a moment in between.
+  useEffect(() => {
+    if (starting && !starting.failed && hasHostBlock(starting.commandId))
+      setStarting(undefined);
+  }, [hostSession, starting]);
+  // A draft being removed leaves the transcript at once, as it does locally,
+  // and returns if the host turns the removal down.
+  const [removingDraft, setRemovingDraft] = useState<string>();
+  useEffect(() => {
+    if (
+      removingDraft &&
+      !hostSession?.blocks.some((block) => block.id === removingDraft)
+    )
+      setRemovingDraft(undefined);
+  }, [hostSession, removingDraft]);
   useEffect(() => {
     if (
       unseenSend &&
@@ -559,6 +579,8 @@ function ConnectedRemoteSession({
               attachments: optimistic?.attachments ?? [],
               startedAt: optimistic?.startedAt ?? Date.now(),
               turnModel: optimistic?.turnModel ?? selectedTurnModel(),
+              draftBlockId:
+                command.type === "send" ? command.draftBlockId : undefined,
             },
       );
     // Keep the original ID across disconnects and app restarts. An ambiguous
@@ -612,6 +634,25 @@ function ConnectedRemoteSession({
     } finally {
       sendingRef.current = false;
       if (alive.current) setSending(false);
+    }
+  };
+
+  // A conversation that was only a draft goes with it, as a local one does,
+  // and the tab starts over as a new conversation.
+  const discardSession = async (id: string) => {
+    try {
+      await remoteRequest(machine.id, "sessions.delete", {
+        projectId: project.projectId,
+        sessionId: id,
+      });
+      cachedSessionSnapshots.delete(snapshotKey(machine.id, id));
+      if (!alive.current) return;
+      setSnapshot(undefined);
+      rememberRemoteSession(shell.id);
+    } catch (reason) {
+      if (!alive.current) return;
+      setRemovingDraft(undefined);
+      setError(String(reason).replace(/^Error: /, ""));
     }
   };
 
@@ -743,7 +784,7 @@ function ConnectedRemoteSession({
       }
       const sent = await dispatchTurn(receipt.sessionId, turn, uploaded);
       if (alive.current)
-        setStarting(sent ? undefined : { ...turn, failed: true });
+        if (!sent) setStarting({ ...turn, failed: true });
     } catch (reason) {
       if (alive.current) {
         setError(String(reason));
@@ -826,7 +867,7 @@ function ConnectedRemoteSession({
     void dispatchTurn(hostSession.id, turn)
       .then((receipt) => {
         if (alive.current)
-          setStarting(receipt ? undefined : { ...turn, failed: true });
+          if (!receipt) setStarting({ ...turn, failed: true });
       })
       .catch((reason) => {
         if (alive.current) {
@@ -912,7 +953,20 @@ function ConnectedRemoteSession({
   ]);
 
   // Show a message the host has not confirmed yet in the transcript.
-  const blocks: Block[] = hostSession?.blocks ?? [];
+  // A draft being sent is replaced by its message at once, as locally.
+  const leavingDrafts = new Set(
+    [
+      removingDraft,
+      startingActive ? starting?.draftBlockId : undefined,
+      pendingSendActive && pending?.type === "send"
+        ? pending.draftBlockId
+        : undefined,
+      unseenActive ? unseenSend?.draftBlockId : undefined,
+    ].filter(Boolean),
+  );
+  const blocks: Block[] = (hostSession?.blocks ?? []).filter(
+    (block) => !leavingDrafts.has(block.id),
+  );
   const unconfirmed: Block | undefined =
     unseenActive && unseenSend
       ? {
@@ -973,7 +1027,7 @@ function ConnectedRemoteSession({
                 void dispatchTurn(sessionId, turn)
                   .then((sent) => {
                     if (alive.current)
-                      setStarting(sent ? undefined : { ...turn, failed: true });
+                      if (!sent) setStarting({ ...turn, failed: true });
                   })
                   .catch((reason) => {
                     if (alive.current) {
@@ -1093,7 +1147,6 @@ function ConnectedRemoteSession({
       plan: !!descriptor?.capabilities.includes("sessions.plan"),
       draft: !!descriptor?.capabilities.includes("sessions.draft"),
     },
-    remoteSessionStarted: !!sessionId,
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     allowedModelHarnesses: hostSession
       ? [hostSession.harness]
@@ -1166,13 +1219,20 @@ function ConnectedRemoteSession({
     onSaveDraft: (_, text, attachments) =>
       submit(text, attachments, undefined, true),
     onRemoveDraft: (_, draftBlockId) => {
-      if (!hostSession || busy || pending || !online) return false;
-      void run({
-        type: "removeDraft",
-        commandId: crypto.randomUUID(),
-        sessionId: hostSession.id,
-        draftBlockId,
-      });
+      if (!hostSession || busy || pending || !online || removingDraft)
+        return false;
+      setRemovingDraft(draftBlockId);
+      if (hostSession.blocks.every((block) => block.id === draftBlockId))
+        void discardSession(hostSession.id);
+      else
+        void run({
+          type: "removeDraft",
+          commandId: crypto.randomUUID(),
+          sessionId: hostSession.id,
+          draftBlockId,
+        }).then((receipt) => {
+          if (!receipt && alive.current) setRemovingDraft(undefined);
+        });
       return true;
     },
     onPlaceSessionInFolder: noop,

@@ -234,7 +234,7 @@ type Props = SessionPaneProps & {
   /** Set for a session running on another machine; see Composer. */
   remoteHost?: ReactNode;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
-  remoteSessionStarted?: boolean;
+  /** An opened host conversation whose transcript has not arrived yet. */
   remoteSessionLoading?: boolean;
   allowedModelHarnesses?: readonly HarnessId[];
 };
@@ -258,7 +258,6 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
 const LocalSessionPane = memo(function LocalSessionPane({
   remoteHost,
   remoteFeatures,
-  remoteSessionStarted = false,
   remoteSessionLoading = false,
   allowedModelHarnesses,
   session,
@@ -558,7 +557,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const workCwd = sessionWorkCwd(session);
   const showDeckProjectPicker = isEmpty && !looksLikeProject(session.cwd);
   const dockComposer =
-    remoteSessionStarted ||
+    remoteSessionLoading ||
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));

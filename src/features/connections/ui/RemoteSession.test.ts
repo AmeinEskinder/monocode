@@ -104,6 +104,7 @@ let branchActionFailure: string | undefined;
 let currentBranch: string;
 let createdBranch: string | undefined;
 let createdWorktree: string | undefined;
+let deletedSessions: string[];
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -117,6 +118,7 @@ beforeEach(() => {
   currentBranch = "main";
   createdBranch = undefined;
   createdWorktree = undefined;
+  deletedSessions = [];
   catalog = { models: { codex: [gpt] }, errors: {} };
   projectKey = rememberRemoteProject("env", {
     id: "project",
@@ -208,6 +210,11 @@ beforeEach(() => {
     if (method === "attachments.upload")
       return { offset: (params as { size: number }).size };
     if (method === "commands.dispatch") return dispatch(params);
+    if (method === "sessions.delete") {
+      deletedSessions.push(params.sessionId!);
+      host = undefined;
+      return { deleted: true };
+    }
     throw new Error(`Unexpected method ${method}`);
   });
   container = document.createElement("div");
@@ -552,8 +559,7 @@ it("sends a remote plan turn from the plus menu", async () => {
   });
 });
 
-it("saves and sends a remote draft", async () => {
-  await render();
+async function saveDraft(text: string) {
   await act(async () => byLabel("Add files or choose a mode")!.click());
   const draft = [
     ...document.body.querySelectorAll<HTMLButtonElement>("button"),
@@ -561,9 +567,18 @@ it("saves and sends a remote draft", async () => {
     button.textContent?.includes("Save this message without starting"),
   )!;
   await act(async () => draft.click());
-  await type("Review this later");
+  await type(text);
   await act(async () => byLabel("Save draft")!.click());
   await settle();
+}
+const transcriptItems = (text: string) =>
+  [...container.querySelectorAll("ol[aria-label='Transcript'] li")].filter(
+    (item) => item.textContent?.includes(text),
+  );
+
+it("saves and sends a remote draft", async () => {
+  await render();
+  await saveDraft("Review this later");
   expect(commands.map((command) => command.type)).toEqual(["create", "draft"]);
   expect(commands.at(-1)).toMatchObject({
     type: "draft",
@@ -577,6 +592,50 @@ it("saves and sends a remote draft", async () => {
     text: "Review this later",
     draftBlockId: commands[1].commandId,
   });
+});
+
+it("keeps a new draft on screen while the host confirms it", async () => {
+  await render();
+  let releaseSync = () => {};
+  syncDelay = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+  await saveDraft("Review this later");
+  expect(commands.map((command) => command.type)).toEqual(["create", "draft"]);
+  expect(transcriptItems("Review this later")).toHaveLength(1);
+  expect(container.textContent).not.toContain("What should we work on");
+  await act(async () => {
+    releaseSync();
+    syncDelay = undefined;
+  });
+  await settle();
+  expect(transcriptItems("Review this later")).toHaveLength(1);
+});
+
+it("replaces a sent draft with its message at once", async () => {
+  await render();
+  await saveDraft("Review this later");
+  syncDelay = new Promise<void>(() => {});
+  await act(async () => byLabel("Send remote draft")!.click());
+  expect(commands.at(-1)).toMatchObject({ type: "send" });
+  expect(transcriptItems("Review this later")).toHaveLength(1);
+  expect(byLabel("Send remote draft")).toBeNull();
+});
+
+it("removes a draft-only conversation with its draft, as a local one", async () => {
+  await render();
+  await saveDraft("Review this later");
+  const sessionId = remoteSessionFor("shell");
+  expect(sessionId).toBe("host-session");
+  await act(async () => byLabel("Remove remote draft")!.click());
+  expect(transcriptItems("Review this later")).toHaveLength(0);
+  await settle();
+  expect(deletedSessions).toEqual([sessionId]);
+  expect(commands.some((command) => command.type === "removeDraft")).toBe(
+    false,
+  );
+  expect(remoteSessionFor("shell")).toBeUndefined();
+  expect(container.textContent).toContain("What should we work on");
 });
 
 it("keeps a sent message visible until the host sync confirms it", async () => {
