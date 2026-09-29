@@ -163,7 +163,7 @@ jobs:
           name: host-packages
           path: build/host-packages
 
-      - name: Upload to R2
+      - name: Upload updater packages to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -280,7 +280,6 @@ jobs:
           # retain an older release under these mutable names.
           aws s3 cp "$ARM_DMG" "s3://${R2_BUCKET_NAME}/MonoCode.dmg" --cache-control "$NO_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$INTEL_DMG" "s3://${R2_BUCKET_NAME}/MonoCode_x64.dmg" --cache-control "$NO_CACHE" --endpoint-url "$ENDPOINT"
-          aws s3 cp latest.json "s3://${R2_BUCKET_NAME}/latest.json" --content-type "application/json" --cache-control "$NO_CACHE" --endpoint-url "$ENDPOINT"
 
       - name: GitHub Release
         env:
@@ -327,6 +326,21 @@ jobs:
             "$INTEL_DMG" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz.sig" \
             "$DEB" "$APPIMAGE" "$RPM" "$NSIS" "$NSIS_SIG" \
             build/host-packages/*.tar.gz build/host-packages/*.zip build/host-packages/*.sha256
+
+      - name: Publish updater feed
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp latest.json "s3://${R2_BUCKET_NAME}/latest.json" \
+            --content-type "application/json" \
+            --cache-control "no-store,max-age=0,must-revalidate" \
+            --endpoint-url "$ENDPOINT"
 
   host:
     name: Standalone host packages
