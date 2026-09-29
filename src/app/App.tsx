@@ -11,6 +11,10 @@ import {
 } from "../features/agent-app/model/agentApp";
 import { submitWithSettlement } from "./model/managedSubmission";
 import {
+  prepareWorkerCheckpoint,
+  trackSessionEdits,
+} from "./model/sessionCheckpoint";
+import {
   submitAfterProjectSync,
   type SubmissionAcceptance,
 } from "./model/submissionAcceptance";
@@ -297,12 +301,10 @@ import {
 import {
   beginSessionTurn,
   applySessionCheckpoint,
-  captureSessionCheckpoint,
   forgetSessionCheckpoint,
   flushSessionCheckpoint,
   keepSessionChanges,
   notifyReviewChanged,
-  prepareSessionCheckpoint,
   sessionCheckpointCleanupSafe,
 } from "../features/sessions/model/checkpoint";
 import { notifyDirsChanged } from "../features/files/model/fileTree";
@@ -6656,8 +6658,12 @@ export default function App({
             revealHandoff(wrap.text);
           }
           nudgeOpenEditors(event, workCwd);
-          if (!orchestrator.forSession(sessionId))
-            trackSessionEdits(sessionId, workCwd, event);
+          trackSessionEdits(
+            sessionId,
+            workCwd,
+            event,
+            orchestrator.forSession(sessionId)?.leadId,
+          );
           const routed = routePlanEvent(event);
           if (routed) enqueueHarnessEvent(sessionId, routed);
         };
@@ -8667,6 +8673,7 @@ export default function App({
                   ),
                 );
         const checkoutCwd = workspace.checkoutCwd;
+        await prepareWorkerCheckpoint(task, checkoutCwd);
         const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
           sessionId: task.sessionId,
@@ -11237,30 +11244,6 @@ function dropOpenFiles(
     });
   }
   return { ...tab, layout, focusedId, editorPanes };
-}
-
-function trackSessionEdits(
-  sessionId: string,
-  cwd: string,
-  event: HarnessEvent,
-) {
-  if (event.type !== "tool.started" && event.type !== "tool.updated") return;
-  if (!isEditTool(event.kind, event.title, event.preview)) return;
-  const paths = [
-    ...(event.paths ?? []),
-    ...(event.preview?.path ? [event.preview.path] : []),
-  ].filter((path, index, all) => all.indexOf(path) === index);
-  if (paths.length === 0 || cwd === "~") return;
-  const completed =
-    event.type === "tool.updated" &&
-    (event.status === "completed" || event.status === "success");
-  if (!completed) {
-    void prepareSessionCheckpoint(sessionId, cwd, paths).catch(() => undefined);
-    return;
-  }
-  void captureSessionCheckpoint(sessionId, cwd, paths)
-    .catch(() => undefined)
-    .then(() => notifyReviewChanged(sessionId));
 }
 
 function nudgeWorkspace(cwd?: string) {
