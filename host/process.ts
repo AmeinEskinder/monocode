@@ -2,44 +2,117 @@ import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, basename } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { RemoteProvider } from "../src/features/connections/model/protocol";
+
+const exec = promisify(execFile);
 
 const npmEntries: Record<string, string> = {
   codex: "node_modules/@openai/codex/bin/codex.js",
   claude: "node_modules/@anthropic-ai/claude-code/cli.js",
 };
 
-export async function resolveProvider(
-  provider: "codex" | "claude",
-): Promise<string> {
-  const windows = process.platform === "win32";
-  const paths = [
+const binaryNames: Record<RemoteProvider, string[]> = {
+  codex: ["codex"],
+  claude: ["claude"],
+  cursor: ["cursor-agent", "agent"],
+  grok: ["grok"],
+  opencode: ["opencode"],
+  pi: ["pi-coding-agent", "pi"],
+  omp: ["omp"],
+  fx: ["fx"],
+  hermes: ["hermes"],
+  antigravity: ["agy_acp_server.par"],
+};
+
+const providerDirectories = (provider: RemoteProvider): string[] => {
+  const home = homedir();
+  const extra: Partial<Record<RemoteProvider, string[]>> = {
+    claude: [
+      join(home, ".claude", "local"),
+      join(home, ".local", "share", "claude"),
+    ],
+    grok: [join(home, ".grok", "bin")],
+    opencode: [join(home, ".opencode", "bin")],
+    fx: [join(home, ".fx", "bin")],
+    hermes: [
+      join(home, ".hermes", "hermes-agent", "venv", "bin"),
+      join(home, ".hermes", "hermes-agent", ".venv", "bin"),
+    ],
+    antigravity: [join(home, ".local", "share", "agy-acp")],
+  };
+  return [
     ...new Set([
       ...(process.env.PATH ?? "").split(delimiter),
-      join(homedir(), ".local", "bin"),
-      ...(windows
-        ? [
-            join(
-              process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
-              "npm",
-            ),
-          ]
-        : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]),
+      join(home, ".local", "bin"),
+      join(home, ".npm-global", "bin"),
+      join(home, ".cargo", "bin"),
+      join(home, "n", "bin"),
+      join(home, ".bun", "bin"),
+      ...(extra[provider] ?? []),
+      ...(process.platform === "win32"
+        ? [join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "npm")]
+        : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/snap/bin"]),
     ]),
   ];
-  for (const directory of paths) {
+};
+
+async function matchesProvider(
+  candidate: string,
+  provider: RemoteProvider,
+  name: string,
+): Promise<boolean> {
+  const marker =
+    provider === "fx"
+      ? /\bacp\b/i
+      : provider === "pi" && name === "pi"
+        ? /\brpc\b/i
+        : provider === "cursor" && name === "agent"
+          ? /\bcursor\b/i
+          : null;
+  if (!marker) return true;
+  const launch = await providerLaunch(candidate, ["--help"]);
+  try {
+    const result = await exec(launch.command, launch.args, {
+      timeout: 4_000,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    });
+    return marker.test(result.stdout + result.stderr);
+  } catch (error) {
+    const output = error as { stdout?: string; stderr?: string };
+    return marker.test(
+      String(output.stdout ?? "") + String(output.stderr ?? ""),
+    );
+  }
+}
+
+export async function resolveProvider(
+  provider: RemoteProvider,
+): Promise<string> {
+  const windows = process.platform === "win32";
+  if (windows && provider === "antigravity")
+    throw new Error("Antigravity ACP is not available on Windows");
+  for (const directory of providerDirectories(provider)) {
     if (!directory) continue;
-    for (const extension of windows ? [".exe", ".cmd", ".bat", ".com"] : [""]) {
-      const candidate = join(
-        directory.replace(/^"|"$/g, ""),
-        provider + extension,
-      );
-      try {
-        await access(candidate, windows ? constants.F_OK : constants.X_OK);
-        if (!(await stat(candidate)).isFile()) continue;
-        await providerLaunch(candidate, []);
-        return candidate;
-      } catch {
-        /* try the next installed launcher */
+    for (const name of binaryNames[provider]) {
+      for (const extension of windows
+        ? [".exe", ".cmd", ".bat", ".com"]
+        : [""]) {
+        const candidate = join(
+          directory.replace(/^"|"$/g, ""),
+          name + extension,
+        );
+        try {
+          await access(candidate, windows ? constants.F_OK : constants.X_OK);
+          if (!(await stat(candidate)).isFile()) continue;
+          await providerLaunch(candidate, []);
+          if (!(await matchesProvider(candidate, provider, name))) continue;
+          return candidate;
+        } catch {
+          /* try the next installed launcher */
+        }
       }
     }
   }

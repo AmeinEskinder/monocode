@@ -46,6 +46,7 @@ import {
 } from "../model/remoteModels";
 import {
   isRemoteProvider,
+  REMOTE_PROVIDERS,
   requireHostDescriptor,
   type CommandReceipt,
   type HostCommand,
@@ -367,6 +368,7 @@ function ConnectedRemoteSession({
             await remoteRequest<HostDescriptor>(
               machine.id,
               "environment.describe",
+              { supportedProviders: REMOTE_PROVIDERS },
             ),
           );
           if (host.environmentId !== machine.environmentId)
@@ -904,7 +906,7 @@ function ConnectedRemoteSession({
       id: `remote:${machine.environmentId}`,
       modelsFor: models,
       resolve: (harness, id = "") => {
-        const provider = harness === "claude" ? "claude" : "codex";
+        const provider = harness as RemoteProvider;
         // Keep the saved model's effort visible even when the host catalog is
         // loading, failed, or no longer lists it.
         const controls = remoteModelControls(
