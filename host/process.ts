@@ -1,12 +1,9 @@
-import { access, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { access, readlink, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, basename } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { RemoteProvider } from "../src/features/connections/model/protocol";
-
-const exec = promisify(execFile);
 
 const npmEntries: Record<string, string> = {
   codex: "node_modules/@openai/codex/bin/codex.js",
@@ -63,29 +60,57 @@ async function matchesProvider(
   provider: RemoteProvider,
   name: string,
 ): Promise<boolean> {
-  const marker =
-    provider === "fx"
-      ? /\bacp\b/i
-      : provider === "pi" && name === "pi"
-        ? /\brpc\b/i
-        : provider === "cursor" && name === "agent"
-          ? /\bcursor\b/i
-          : null;
-  if (!marker) return true;
-  const launch = await providerLaunch(candidate, ["--help"]);
-  try {
-    const result = await exec(launch.command, launch.args, {
-      timeout: 4_000,
-      maxBuffer: 1024 * 1024,
-      windowsHide: true,
-    });
-    return marker.test(result.stdout + result.stderr);
-  } catch (error) {
-    const output = error as { stdout?: string; stderr?: string };
-    return marker.test(
-      String(output.stdout ?? "") + String(output.stderr ?? ""),
-    );
+  if (provider === "cursor" && name === "agent") {
+    try {
+      if ((await readlink(candidate)).toLowerCase().includes("cursor-agent"))
+        return true;
+    } catch {
+      /* not a symlink */
+    }
+    return fileContains(candidate, ["cursor-agent"], 64 * 1024);
   }
+  if (provider === "pi" && name === "pi")
+    return fileContains(
+      candidate,
+      [
+        "pi-coding-agent",
+        "@earendil-works/pi",
+        "@mariozechner/pi-coding-agent",
+        "pi_coding_agent",
+      ],
+      64 * 1024,
+    );
+  if (provider === "fx")
+    return fileContains(candidate, [
+      "vercel-labs/fx",
+      "fx_model",
+      "createfxagent",
+      "fx acp",
+    ]);
+  return true;
+}
+
+async function fileContains(
+  path: string,
+  markers: string[],
+  maxBytes = Number.POSITIVE_INFINITY,
+): Promise<boolean> {
+  let read = 0;
+  let carry = "";
+  for await (const chunk of createReadStream(path, {
+    highWaterMark: 64 * 1024,
+  })) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const length = Math.min(bytes.length, maxBytes - read);
+    const text = (
+      carry + bytes.subarray(0, length).toString("latin1")
+    ).toLowerCase();
+    if (markers.some((marker) => text.includes(marker))) return true;
+    carry = text.slice(-64);
+    read += length;
+    if (read >= maxBytes) break;
+  }
+  return false;
 }
 
 export async function resolveProvider(

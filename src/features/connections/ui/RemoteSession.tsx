@@ -271,7 +271,7 @@ function ConnectedRemoteSession({
     pendingRemoteCommand(project.key, machine.environmentId, sessionId ?? null, shell.id),
   );
   const [draft, setDraft] = useState<Configuration>(() => ({
-    harness: shell.harness === "claude" ? "claude" : "codex",
+    harness: isRemoteProvider(shell.harness) ? shell.harness : "codex",
     model: shell.model,
     settings: shell.modelSettings ?? {},
     mode: shell.runtimeMode,

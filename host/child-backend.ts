@@ -159,8 +159,8 @@ export class HostChildBackend implements ChildBackend {
       case "harness_read_text_file": {
         const path = String(args.path ?? "");
         const info = await stat(path);
-        if (!info.isFile() || info.size > 1024 * 1024)
-          throw new Error("File is not a readable text file of at most 1 MiB");
+        if (!info.isFile() || info.size > 8 * 1024 * 1024)
+          throw new Error("File is not a readable text file of at most 8 MiB");
         const bytes = await readFile(path);
         if (bytes.includes(0))
           throw new Error("Binary file is not readable as text");

@@ -49,6 +49,7 @@ async function discoverModels(flavor: PiFlavor, workingDirectory?: string) {
     () => rpc.close(new Error(`${flavor.label} catalog probe exited`)),
   );
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await spawnChild(
       probeId,
@@ -61,7 +62,7 @@ async function discoverModels(flavor: PiFlavor, workingDirectory?: string) {
     const response = await Promise.race([
       rpc.request({ type: "get_available_models" }, DISCOVERY_TIMEOUT_MS),
       new Promise<never>((_, reject) => {
-        setTimeout(
+        timeout = setTimeout(
           () => reject(new Error(`${flavor.label} model discovery timed out`)),
           DISCOVERY_TIMEOUT_MS,
         );
@@ -69,6 +70,7 @@ async function discoverModels(flavor: PiFlavor, workingDirectory?: string) {
     ]);
     return modelsFromRpcData(flavor, response.data);
   } finally {
+    if (timeout) clearTimeout(timeout);
     await stop();
   }
 }

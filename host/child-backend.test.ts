@@ -46,6 +46,13 @@ it("resolves every provider and runs only allowed catalog commands", async () =>
         path: join(directory, "note.txt"),
       }),
     ).toBe("host-owned transcript");
+    const transcript = "x".repeat(1024 * 1024 + 1);
+    writeFileSync(join(directory, "large-transcript.txt"), transcript);
+    expect(
+      await backend.invoke("harness_read_text_file", {
+        path: join(directory, "large-transcript.txt"),
+      }),
+    ).toBe(transcript);
   } finally {
     await backend.close();
     rmSync(directory, { recursive: true, force: true });
