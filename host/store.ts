@@ -159,9 +159,14 @@ export class HostStore {
 
   /** Returns the saved value, stamped with per-block change revisions. */
   save(input: HostSession, event: unknown): HostSession {
+    const previous = this.find(input.session.id);
     const value = {
       ...input,
-      blockRevisions: blockRevisions(this.find(input.session.id), input),
+      // Older snapshots have no creation time. Preserve their last recorded
+      // timestamp when they are first written by this version of the host.
+      createdAt:
+        input.createdAt ?? previous?.createdAt ?? previous?.updatedAt ?? input.updatedAt,
+      blockRevisions: blockRevisions(previous, input),
     };
     this.db
       .prepare(
@@ -315,7 +320,7 @@ export function summary(value: HostSession): HostSessionSummary {
     harness: value.session.harness as RemoteProvider,
     model: value.session.model,
     runtimeMode: value.session.runtimeMode,
-    createdAt: value.updatedAt,
+    createdAt: value.createdAt ?? value.updatedAt,
     archived: value.archived,
     pinned: value.pinned,
     linkedWorkItem: value.session.linkedWorkItem,

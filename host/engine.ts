@@ -430,12 +430,14 @@ export class HostEngine {
           throw new Error("Wait for the branch switch to finish");
         this.provider(command.harness);
         const cwd = resolveHostWorktree(project.cwd, command.worktreeCwd);
+        const now = Date.now();
         value = {
           projectId: project.id,
           autoWorktreeBranch: command.autoWorktreeBranch,
           revision: 0,
           status: "idle",
-          updatedAt: Date.now(),
+          createdAt: now,
+          updatedAt: now,
           session: {
             id: randomUUID(),
             cwd,

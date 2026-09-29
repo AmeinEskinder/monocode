@@ -36,6 +36,8 @@ export type HostSession = {
   revision: number;
   runId?: string;
   status: "idle" | "running" | "interrupted";
+  /** Missing from snapshots written before creation time was stored. */
+  createdAt?: number;
   updatedAt: number;
   archived?: boolean;
   pinned?: boolean;
