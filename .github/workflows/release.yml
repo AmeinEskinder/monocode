@@ -319,13 +319,63 @@ jobs:
           cp "$ARM_SIG" "$RELEASE_ASSETS/MonoCode.app.tar.gz.sig"
           cp "$INTEL_TAR" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz"
           cp "$INTEL_SIG" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz.sig"
-          gh release create "$GITHUB_REF_NAME" \
-            --title "MonoCode $VERSION" \
-            --notes "See CHANGELOG.md for details." \
-            "$ARM_DMG" "$RELEASE_ASSETS/MonoCode.app.tar.gz" "$RELEASE_ASSETS/MonoCode.app.tar.gz.sig" \
-            "$INTEL_DMG" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz.sig" \
-            "$DEB" "$APPIMAGE" "$RPM" "$NSIS" "$NSIS_SIG" \
-            build/host-packages/*.tar.gz build/host-packages/*.zip build/host-packages/*.sha256
+          HOST_ARCHIVES=(build/host-packages/*.tar.gz build/host-packages/*.zip)
+          if (( ${#HOST_ARCHIVES[@]} != 6 )); then
+            echo "Expected six host archives" >&2
+            exit 1
+          fi
+          HOST_FILES=("${HOST_ARCHIVES[@]}")
+          for archive in "${HOST_ARCHIVES[@]}"; do
+            if [[ ! -f "$archive.sha256" ]]; then
+              echo "Missing host checksum: $archive.sha256" >&2
+              exit 1
+            fi
+            HOST_FILES+=("$archive.sha256")
+          done
+          RELEASE_FILES=(
+            "$ARM_DMG" "$RELEASE_ASSETS/MonoCode.app.tar.gz" "$RELEASE_ASSETS/MonoCode.app.tar.gz.sig"
+            "$INTEL_DMG" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz" "$RELEASE_ASSETS/MonoCode_x64.app.tar.gz.sig"
+            "$DEB" "$APPIMAGE" "$RPM" "$NSIS" "$NSIS_SIG" "${HOST_FILES[@]}"
+          )
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
+              --title "MonoCode $VERSION" \
+              --notes "See CHANGELOG.md for details."
+          fi
+          verify_release() {
+            local expected_draft="$1"
+            gh release view "$GITHUB_REF_NAME" --json isDraft,assets > "$RUNNER_TEMP/release-state.json"
+            node - "$RUNNER_TEMP/release-state.json" "$expected_draft" "${RELEASE_FILES[@]}" <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (release.isDraft !== (process.argv[3] === "true")) {
+            console.error("GitHub Release publication state is unexpected.");
+            process.exit(1);
+          }
+          const names = new Set(release.assets.map((asset) => asset.name));
+          for (const file of process.argv.slice(4)) {
+            const name = path.basename(file);
+            if (!names.has(name)) {
+              console.error(`GitHub Release is missing ${name}.`);
+              process.exit(1);
+            }
+          }
+          NODE
+          }
+          IS_DRAFT=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)
+          if [[ "$IS_DRAFT" == true ]]; then
+            # Draft assets can be replaced after an interrupted upload. A
+            # published release is immutable, so only resume drafts.
+            gh release upload "$GITHUB_REF_NAME" "${RELEASE_FILES[@]}" --clobber
+            verify_release true
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          elif [[ "$IS_DRAFT" != false ]]; then
+            echo "Unexpected GitHub Release state: $IS_DRAFT" >&2
+            exit 1
+          fi
+          verify_release false
 
       - name: Publish updater feed
         env:
