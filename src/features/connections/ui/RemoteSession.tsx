@@ -466,7 +466,7 @@ function ConnectedRemoteSession({
   // A new session starts with the tab's model when the host offers it, and
   // otherwise with the host's first model.
   useEffect(() => {
-    if (sessionId || !catalog || !providers.length) return;
+    if (!online || sessionId || !catalog || !providers.length) return;
     const harness = providers.includes(draft.harness)
       ? draft.harness
       : providers[0];
@@ -483,7 +483,7 @@ function ConnectedRemoteSession({
       model: model.id,
       settings: carryModelSettings(model.settings ?? [], current.settings),
     }));
-  }, [catalog, providers, sessionId, draft.harness, draft.model]);
+  }, [online, catalog, providers, sessionId, draft.harness, draft.model]);
 
   const saved: Configuration | undefined = hostSession && {
     harness: hostSession.harness as RemoteProvider,
