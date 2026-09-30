@@ -1,7 +1,9 @@
 import type { OrchestrationTask } from "../../features/orchestration/model/orchestrationState";
 import {
   captureSessionCheckpoint,
-  ensureSessionCheckpoint,
+  ensureWorkerCheckpoint,
+  captureWorkerCheckpoint,
+  flushSessionCheckpoint,
   notifyReviewChanged,
   prepareSessionCheckpoint,
 } from "../../features/sessions/model/checkpoint";
@@ -12,10 +14,35 @@ import type { HarnessEvent } from "../../integrations/harness/core/types";
 export async function prepareWorkerCheckpoint(
   task: Pick<OrchestrationTask, "sessionId" | "workspace" | "workspacePolicy">,
   checkoutCwd: string,
+  discardNewCheckout?: () => Promise<unknown>,
 ): Promise<void> {
   // Retained and legacy shared workers may already have edits to preserve.
   if (task.workspace || task.workspacePolicy === "shared") return;
-  await ensureSessionCheckpoint(task.sessionId, checkoutCwd);
+  try {
+    await ensureWorkerCheckpoint(task.sessionId, checkoutCwd);
+  } catch (error) {
+    if (discardNewCheckout) {
+      try {
+        await discardNewCheckout();
+      } catch (cleanupError) {
+        throw new Error(
+          `Checkpoint preparation failed: ${String(error)}. Checkout cleanup failed: ${String(cleanupError)}. The worktree was kept.`,
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+export async function settleWorkerCheckpoint(
+  task: Pick<OrchestrationTask, "sessionId" | "files">,
+  cwd: string,
+  stop: () => Promise<void>,
+): Promise<void> {
+  await stop();
+  await flushSessionCheckpoint(task.sessionId);
+  await captureWorkerCheckpoint(task.sessionId, cwd, task.files);
+  notifyReviewChanged(task.sessionId);
 }
 
 export function trackSessionEdits(

@@ -8,6 +8,7 @@ import {
 import type { HarnessEvent } from "../../integrations/harness/core/types";
 import {
   prepareWorkerCheckpoint,
+  settleWorkerCheckpoint,
   trackSessionEdits,
 } from "./sessionCheckpoint";
 
@@ -54,7 +55,7 @@ describe("worker checkpoint lifecycle", () => {
       checkoutCwd,
     ).then(ready);
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
-    expect(invoke).toHaveBeenCalledWith("session_checkpoint_ensure", {
+    expect(invoke).toHaveBeenCalledWith("worker_checkpoint_ensure", {
       sessionId: "worker",
       cwd: checkoutCwd,
     });
@@ -95,7 +96,7 @@ describe("worker checkpoint lifecycle", () => {
     trackSessionEdits("worker", checkoutCwd, completed, "lead");
     await applySessionCheckpoint("worker", checkoutCwd, "/repo");
     expect(vi.mocked(invoke).mock.calls).toEqual([
-      ["session_checkpoint_ensure", { sessionId: "worker", cwd: checkoutCwd }],
+      ["worker_checkpoint_ensure", { sessionId: "worker", cwd: checkoutCwd }],
       [
         "session_checkpoint_prepare",
         {
@@ -152,5 +153,106 @@ describe("worker checkpoint lifecycle", () => {
       "session_checkpoint_prepare",
       "session_checkpoint_capture",
     ]);
+  });
+
+  it("removes only a checkout created by the failed preparation", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      prepareWorkerCheckpoint({ sessionId: "fresh" }, checkoutCwd, remove),
+    ).rejects.toThrow("disk full");
+    expect(remove).toHaveBeenCalledOnce();
+    remove.mockClear();
+    await prepareWorkerCheckpoint(
+      { sessionId: "retained", workspace },
+      checkoutCwd,
+      remove,
+    );
+    await prepareWorkerCheckpoint(
+      { sessionId: "shared", workspacePolicy: "shared" },
+      "/repo",
+      remove,
+    );
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("preserves the failure and reports a checkout that could not be removed", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("disk full"));
+    await expect(
+      prepareWorkerCheckpoint({ sessionId: "fresh" }, checkoutCwd, async () => {
+        throw new Error("busy");
+      }),
+    ).rejects.toThrow("disk full. Checkout cleanup failed: Error: busy");
+  });
+
+  it("captures shell changes only after the worker exits", async () => {
+    let exit!: () => void;
+    const stop = () =>
+      new Promise<void>((resolve) => {
+        exit = resolve;
+      });
+    const task = { sessionId: "shell-worker", files: ["src"] };
+    trackSessionEdits(
+      task.sessionId,
+      checkoutCwd,
+      {
+        type: "tool.updated",
+        callId: "shell-1",
+        kind: "execute",
+        title: "Run shell command",
+        status: "completed",
+      },
+      "lead",
+    );
+    const finished = settleWorkerCheckpoint(task, checkoutCwd, stop);
+    expect(invoke).not.toHaveBeenCalled();
+    exit();
+    await finished;
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(
+      "worker_checkpoint_capture",
+      {
+        sessionId: task.sessionId,
+        cwd: checkoutCwd,
+        scopes: ["src"],
+      },
+    );
+  });
+
+  it("flushes a completion-only event before the final whole-worker capture", async () => {
+    const task = { sessionId: "late-path", files: ["src"] };
+    trackSessionEdits(task.sessionId, checkoutCwd, completed, "lead");
+    await settleWorkerCheckpoint(task, checkoutCwd, async () => {});
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual([
+      "session_checkpoint_capture",
+      "worker_checkpoint_capture",
+    ]);
+  });
+
+  it("blocks integration and removal when process shutdown fails", async () => {
+    const applyOrRemove = vi.fn();
+    await expect(
+      settleWorkerCheckpoint(
+        { sessionId: "stuck", files: ["."] },
+        checkoutCwd,
+        async () => {
+          throw new Error("exit not confirmed");
+        },
+      ).then(applyOrRemove),
+    ).rejects.toThrow("exit not confirmed");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(applyOrRemove).not.toHaveBeenCalled();
+  });
+
+  it("blocks integration when the final capture fails", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("outside assignment"));
+    const applyOrRemove = vi.fn();
+    await expect(
+      settleWorkerCheckpoint(
+        { sessionId: "blocked", files: ["src"] },
+        checkoutCwd,
+        async () => {},
+      ).then(applyOrRemove),
+    ).rejects.toThrow("outside assignment");
+    expect(applyOrRemove).not.toHaveBeenCalled();
   });
 });
