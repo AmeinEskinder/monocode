@@ -78,6 +78,7 @@ impl CheckpointStore {
             &Manifest {
                 cwd: root.to_string_lossy().into_owned(),
                 worker: None,
+                after_generation: None,
                 files,
                 touched: BTreeSet::new(),
                 tracked,
@@ -252,8 +253,8 @@ impl CheckpointStore {
                 .copied()
                 .ok_or_else(|| format!("Missing worker snapshot for {relative}"))?;
             let target = worktree_snapshot(&to_root, relative);
-            let before_state = stored_snapshot(&dir, relative, before, false);
-            let after_state = stored_snapshot(&dir, relative, after, true);
+            let before_state = stored_snapshot(&dir, &manifest, relative, before, false);
+            let after_state = stored_snapshot(&dir, &manifest, relative, after, true);
             if target == after_state {
                 already_applied += 1;
             } else if target != before_state {
@@ -266,7 +267,7 @@ impl CheckpointStore {
         for relative in &changed {
             let after = manifest.after.get(relative).copied().unwrap();
             let target = worktree_snapshot(&to_root, relative);
-            let after_state = stored_snapshot(&dir, relative, after, true);
+            let after_state = stored_snapshot(&dir, &manifest, relative, after, true);
             if target != after_state {
                 write_state(&to_root, relative, after_state.0, after_state.1)?;
             }
@@ -330,7 +331,7 @@ impl CheckpointStore {
             .copied()
             .ok_or_else(|| "Session result is unavailable".to_string())?;
         let original = read_snapshot(&dir, &relative, before);
-        let current = read_after_snapshot(&dir, &relative, after);
+        let current = read_after_snapshot(&dir, &manifest, &relative, after);
         let too_large =
             matches!(original, FileState::Skipped) || matches!(current, FileState::Skipped);
         let binary = state_is_binary(&original) || state_is_binary(&current);
@@ -495,6 +496,8 @@ struct Manifest {
     cwd: String,
     #[serde(default)]
     worker: Option<worker::Baseline>,
+    #[serde(default)]
+    after_generation: Option<u64>,
     files: BTreeMap<String, SnapshotKind>,
     #[serde(default)]
     touched: BTreeSet<String>,
@@ -810,7 +813,7 @@ fn verified_worker_delta(
                 "Cannot safely integrate {relative}: this file type or size cannot be checkpointed. The worker worktree was kept."
             ));
         }
-        let before_state = stored_snapshot(dir, relative, *before, false);
+        let before_state = stored_snapshot(dir, manifest, relative, *before, false);
         if *before == SnapshotKind::Contents && before_state.0 == FileState::Missing {
             return Err(format!(
                 "Missing baseline snapshot for {relative}. The worker worktree was kept."
@@ -832,7 +835,7 @@ fn verified_worker_delta(
                     "Cannot safely integrate {relative}: this file type or size cannot be checkpointed. The worker worktree was kept."
                 ));
             }
-            let after_state = stored_snapshot(dir, relative, after, true);
+            let after_state = stored_snapshot(dir, manifest, relative, after, true);
             if after == SnapshotKind::Contents && after_state.0 == FileState::Missing {
                 return Err(format!(
                     "Missing worker snapshot for {relative}. The worker worktree was kept."
@@ -879,12 +882,13 @@ fn write_state(
 
 fn stored_snapshot(
     dir: &Path,
+    manifest: &Manifest,
     relative: &str,
     kind: SnapshotKind,
     after: bool,
 ) -> (FileState, Option<u32>) {
     let blob_root = if after {
-        dir.join("after")
+        after_root(dir, manifest)
     } else {
         dir.join("files")
     };
@@ -1003,7 +1007,9 @@ fn diff_from_manifest_with(
 fn session_snapshot_differs(dir: &Path, manifest: &Manifest, relative: &str) -> Option<bool> {
     let before = manifest.files.get(relative).copied()?;
     let after = manifest.after.get(relative).copied()?;
-    Some(read_snapshot(dir, relative, before) != read_after_snapshot(dir, relative, after))
+    Some(
+        read_snapshot(dir, relative, before) != read_after_snapshot(dir, manifest, relative, after),
+    )
 }
 
 #[cfg(test)]
@@ -1095,7 +1101,7 @@ fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> O
         return None;
     }
     let before_path = state_blob_path(&dir.join("files"), relative).ok()?;
-    let after_path = state_blob_path(&dir.join("after"), relative).ok()?;
+    let after_path = state_blob_path(&after_root(dir, manifest), relative).ok()?;
     let (additions, deletions) = diff_numstat(&before_path, &after_path)?;
     let status = match (before, after) {
         (SnapshotKind::Missing, SnapshotKind::Missing) => "modified",
@@ -1133,7 +1139,7 @@ fn after_matches_worktree(dir: &Path, root: &Path, manifest: &Manifest, relative
     let Some(kind) = manifest.after.get(relative).copied() else {
         return false;
     };
-    read_worktree(root, relative) == read_after_snapshot(dir, relative, kind)
+    read_worktree(root, relative) == read_after_snapshot(dir, manifest, relative, kind)
 }
 
 fn release_path(manifest: &mut Manifest, relative: &str) {
@@ -1282,8 +1288,20 @@ fn read_snapshot(dir: &Path, relative: &str, kind: SnapshotKind) -> FileState {
     read_snapshot_at(&dir.join("files"), relative, kind)
 }
 
-fn read_after_snapshot(dir: &Path, relative: &str, kind: SnapshotKind) -> FileState {
-    read_snapshot_at(&dir.join("after"), relative, kind)
+fn after_root(dir: &Path, manifest: &Manifest) -> PathBuf {
+    match manifest.after_generation {
+        Some(generation) => dir.join("captures").join(generation.to_string()),
+        None => dir.join("after"),
+    }
+}
+
+fn read_after_snapshot(
+    dir: &Path,
+    manifest: &Manifest,
+    relative: &str,
+    kind: SnapshotKind,
+) -> FileState {
+    read_snapshot_at(&after_root(dir, manifest), relative, kind)
 }
 
 fn read_snapshot_at(blob_root: &Path, relative: &str, kind: SnapshotKind) -> FileState {
@@ -2109,6 +2127,130 @@ mod tests {
     }
 
     #[test]
+    fn worker_failed_recapture_preserves_the_previous_result() {
+        let source = tmp("worker-failed-recapture");
+        let target = tmp("worker-failed-recapture-target");
+        assert!(init_git_commit(
+            &source.0,
+            &[("a.txt", "head\n"), ("z.txt", "head\n")]
+        ));
+        let from = source.0.to_string_lossy().into_owned();
+        let to = target.0.to_string_lossy().into_owned();
+        assert!(git(&source.0, &["clone", &from, &to]));
+        for relative in ["a.txt", "z.txt"] {
+            std::fs::copy(source.0.join(relative), target.0.join(relative)).unwrap();
+        }
+        let (_root, store) = store();
+        store.ensure_worker("worker", &from).unwrap();
+        std::fs::write(source.0.join("a.txt"), "first\n").unwrap();
+        store
+            .capture_worker("worker", &from, &[".".into()])
+            .unwrap();
+        let dir = store.session_dir("worker");
+        let saved = std::fs::read(dir.join("manifest.json")).unwrap();
+
+        std::fs::write(source.0.join("a.txt"), "second\n").unwrap();
+        std::fs::File::create(source.0.join("z.txt"))
+            .unwrap()
+            .set_len(MAX_TEXT_FILE_BYTES + 1)
+            .unwrap();
+        assert!(store
+            .capture_worker("worker", &from, &[".".into()])
+            .unwrap_err()
+            .contains("unsupported file z.txt"));
+        assert_eq!(std::fs::read(dir.join("manifest.json")).unwrap(), saved);
+        assert_eq!(
+            store.file_diff("worker", &from, "a.txt").unwrap().current,
+            "first\n"
+        );
+        assert!(store
+            .apply("worker", &from, &to)
+            .unwrap_err()
+            .contains("changed after"));
+        assert_eq!(std::fs::read(target.0.join("a.txt")).unwrap(), b"head\n");
+
+        std::fs::write(source.0.join("a.txt"), "first\n").unwrap();
+        std::fs::write(source.0.join("z.txt"), "head\n").unwrap();
+        assert_eq!(store.apply("worker", &from, &to).unwrap().files, ["a.txt"]);
+        assert_eq!(std::fs::read(target.0.join("a.txt")).unwrap(), b"first\n");
+
+        std::fs::write(source.0.join("a.txt"), "head\n").unwrap();
+        std::fs::write(source.0.join("z.txt"), "third\n").unwrap();
+        store
+            .capture_worker("worker", &from, &[".".into()])
+            .unwrap();
+        let manifest = read_manifest(&dir).unwrap().unwrap();
+        assert_eq!(manifest.tracked, BTreeSet::from(["z.txt".into()]));
+        assert_eq!(
+            relatives(&store.status("worker", &from).unwrap()),
+            ["z.txt"]
+        );
+        assert_eq!(
+            store.file_diff("worker", &from, "z.txt").unwrap().current,
+            "third\n"
+        );
+    }
+
+    #[test]
+    fn worker_recapture_publication_failure_leaves_published_blobs_intact() {
+        let source = tmp("worker-recapture-write-error");
+        assert!(init_git_commit(
+            &source.0,
+            &[("a.txt", "head\n"), ("z.txt", "head\n")]
+        ));
+        let from = source.0.to_string_lossy().into_owned();
+        let (_root, store) = store();
+        store.ensure_worker("worker", &from).unwrap();
+        std::fs::write(source.0.join("a.txt"), "first\n").unwrap();
+        store
+            .capture_worker("worker", &from, &[".".into()])
+            .unwrap();
+        let dir = store.session_dir("worker");
+        let saved = read_manifest(&dir).unwrap().unwrap();
+        let mut next = saved.clone();
+        next.after_generation = Some(saved.after_generation.unwrap() + 1);
+        let blocked = dir.join("manifest.json.tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(source.0.join("a.txt"), "second\n").unwrap();
+        std::fs::write(source.0.join("z.txt"), "second\n").unwrap();
+        std::fs::write(source.0.join("cache"), "unpublished\n").unwrap();
+        assert!(store
+            .capture_worker("worker", &from, &[".".into()])
+            .is_err());
+        assert_eq!(read_manifest(&dir).unwrap().unwrap(), saved);
+        assert_eq!(
+            std::fs::read(after_root(&dir, &saved).join("a.txt")).unwrap(),
+            b"first\n"
+        );
+        assert_eq!(
+            std::fs::read(after_root(&dir, &next).join("a.txt")).unwrap(),
+            b"second\n"
+        );
+        std::fs::remove_dir(blocked).unwrap();
+        std::fs::remove_file(source.0.join("cache")).unwrap();
+        std::fs::create_dir(source.0.join("cache")).unwrap();
+        std::fs::write(source.0.join("cache/child.txt"), "replacement\n").unwrap();
+        store
+            .capture_worker("worker", &from, &[".".into()])
+            .unwrap();
+        assert_eq!(
+            store.file_diff("worker", &from, "a.txt").unwrap().current,
+            "second\n"
+        );
+        assert_eq!(
+            store.file_diff("worker", &from, "z.txt").unwrap().current,
+            "second\n"
+        );
+        assert_eq!(
+            store
+                .file_diff("worker", &from, "cache/child.txt")
+                .unwrap()
+                .current,
+            "replacement\n"
+        );
+    }
+
+    #[test]
     fn worker_missing_after_blob_cannot_be_applied_as_a_deletion() {
         let source = tmp("worker-missing-after");
         let target = tmp("worker-missing-after-target");
@@ -2122,7 +2264,9 @@ mod tests {
         store
             .capture_worker("worker", &from, &[".".into()])
             .unwrap();
-        std::fs::remove_file(store.session_dir("worker").join("after/a.txt")).unwrap();
+        let dir = store.session_dir("worker");
+        let manifest = read_manifest(&dir).unwrap().unwrap();
+        std::fs::remove_file(after_root(&dir, &manifest).join("a.txt")).unwrap();
         std::fs::remove_file(source.0.join("a.txt")).unwrap();
         assert!(store
             .apply("worker", &from, &to)

@@ -128,6 +128,7 @@ impl CheckpointStore {
             &Manifest {
                 cwd: root.to_string_lossy().into_owned(),
                 worker: Some(baseline),
+                after_generation: None,
                 files,
                 touched: BTreeSet::new(),
                 tracked: BTreeSet::new(),
@@ -188,7 +189,7 @@ impl CheckpointStore {
                     "Missing baseline snapshot for {relative}. The worker worktree was kept."
                 ));
             }
-            if stored_snapshot(&dir, &relative, before, false)
+            if stored_snapshot(&dir, &manifest, &relative, before, false)
                 != worktree_snapshot(&root, &relative)
             {
                 let key = scope_key(&relative);
@@ -208,12 +209,29 @@ impl CheckpointStore {
             );
         }
         manifest.touched.clear();
+        manifest.tracked.clear();
         manifest.prepared.clear();
         manifest.after.clear();
         manifest.stats.clear();
+        std::fs::create_dir_all(dir.join("captures")).map_err(|e| e.to_string())?;
+        let capture_root = loop {
+            manifest.after_generation = Some(
+                manifest
+                    .after_generation
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or("Worker checkpoint generation overflow")?,
+            );
+            let path = after_root(&dir, &manifest);
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        };
         for (relative, before) in changed {
             manifest.files.entry(relative.clone()).or_insert(before);
-            let after = snapshot_after_file(&dir, &root, &relative)?;
+            let after = snapshot_file_at(&capture_root, &root, &relative)?;
             if after == SnapshotKind::Skipped {
                 return Err(format!(
                     "Cannot capture unsupported file {relative}. The worker worktree was kept."
